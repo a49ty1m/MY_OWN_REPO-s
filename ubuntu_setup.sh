@@ -1,64 +1,92 @@
-#!bin/bash
+#!/usr/bin/env bash
 
-# This is a setup script
-echo "Setting up the environment..."
-
-#update and upgrade the system
+# -------------------------------------------------
+#  Basic system update / upgrade
+# -------------------------------------------------
+echo "Updating the system..."
 sudo apt-get update && sudo apt-get upgrade -y
-sudo snap refresh # Update snap packages
+sudo apt-get install -y tldr ncdu git curl vim nano vlc gparted calibre
+echo "Core packages installed."
 
-echo "System updated and upgraded, and snap packages refreshed."
-
-# Install necessary packages
-sudo apt-get install -y tldr ncdu git curl vim nano vlc gparted calibre 
-
-echo "tldr, ncdu, git, curl, vim, and nano text editors, vlc media player, gparted disk manager, calibre ebook manager installed."
-
-tldr -update # Update tldr pages
+# Refresh tldr pages
+tldr -update
 echo "tldr pages updated."
 
-sudo curl -fsS https://dl.brave.com/install.sh | sh # Install Brave Browser
-echo "Brave Browser installed."
+# -------------------------------------------------
+#  Install Brave (stable & nightly)
+# -------------------------------------------------
+echo "Installing Brave Browser (stable)..."
+sudo curl -fsS https://dl.brave.com/install.sh | sh
+echo "Brave stable installed."
 
-sudo curl -fsS https://dl.brave.com/install.sh | CHANNEL=nightly sh # Install Brave Browser Nightly
-echo "Brave Browser and Brave Nightly installed."
+echo "Installing Brave Browser (nightly)..."
+sudo curl -fsS https://dl.brave.com/install.sh | CHANNEL=nightly sh
+echo "Brave nightly installed."
 
-sudo snap install code --classic # Install Visual Studio Code
-echo "Visual Studio Code installed."
-
-sudo snap install notion --classic # Install Notion
-echo "Notion installed."
-
-sudo snap install notion-calendar-snap # Install Notion Calendar
-echo "Notion Calendar installed."
-
-sudo snap install discord # Install Discord
-echo "Discord installed."
-
+# -------------------------------------------------
+#  Git configuration
+# -------------------------------------------------
 echo "Configuring Git..."
-git --version # Check git version
-git config --global core.editor "code" --wait # Set VS Code as default git editor 
+git --version
+git config --global core.editor "code --wait"
 git config --global user.name "a49ty1m"
 git config --global user.email "a4920251m@gmail.com"
-echo "Git configured with global username and email."
+echo "Git configured."
 
-echo "setting up Python3 and installing pip..."
-sudo apt install python-is-python3 -y # Make python command point to python3
-echo "Python command now points to Python3."
+# -------------------------------------------------
+#  Python3 + pip
+# -------------------------------------------------
+echo "Setting up Python3 and pip..."
+sudo apt-get install -y python-is-python3 python3-pip
+pip3 install --upgrade pip
+echo "Python3 and pip ready."
 
-sudo apt install python3-pip -y # Install pip for python3
-echo "Pip for Python3 installed."
+# -------------------------------------------------
+#  Flatpak setup (run once per machine)
+# -------------------------------------------------
+# Install Flatpak if it isn’t already
+if ! command -v flatpak &>/dev/null; then
+    echo "Installing Flatpak..."
+    sudo apt-get install -y flatpak
+fi
 
-pip3 install --upgrade pip # Upgrade pip
-echo "Pip upgraded to the latest version."
+# Add Flathub repository (only needed the first time)
+if ! flatpak remote-list | grep -q flathub; then
+    echo "Adding Flathub remote..."
+    sudo flatpak remote-add --if-not-exists flathub \
+        https://flathub.org/repo/flathub.flatpakrepo
+fi
 
-echo "Setup complete. You can now start using your environment."
+# -------------------------------------------------
+#  Install extra apps via Flatpak
+# -------------------------------------------------
+declare -A flatpak_apps=(
+    ["org.videolan.VLC"]="vlc"                     # optional, already apt‑installed
+    ["com.visualstudio.code"]="visual-studio-code" # VS Code (official Flatpak)
+    ["com.discordapp.Discord"]="discord"
+    ["com.notionhq.Notion"]="notion"
+    # Add more Flatpak IDs here as needed
+)
 
-echo "Opening Visual Studio Code..."
-code . 
+echo "Installing extra apps with Flatpak..."
+for app_id in "${!flatpak_apps[@]}"; do
+    if ! flatpak list --app | grep -q "$app_id"; then
+        echo "→ Installing ${flatpak_apps[$app_id]} ($app_id)"
+        sudo flatpak install -y flathub "$app_id"
+    else
+        echo "→ ${flatpak_apps[$app_id]} already installed."
+    fi
+done
 
-echo "opening brave browser..."
-echo "Now Open Your Phone and connect both whatsapp and braveSync." 
-brave-browser web.whatsapp.com
-brave-browser brave://settings/braveSync
-brave-browser github.com/login 
+# -------------------------------------------------
+#  Final touches
+# -------------------------------------------------
+echo "Setup complete. Launching VS Code..."
+code .
+
+echo "Opening Brave to WhatsApp and sync pages..."
+brave-browser https://web.whatsapp.com \
+               brave://settings/braveSync \
+               https://github.com/login
+
+echo "All done. Enjoy your environment."
