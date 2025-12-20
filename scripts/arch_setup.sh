@@ -95,7 +95,7 @@ code . &
 
 echo "Step 9: Opening Brave Browser..."
 echo "Now Open Your Phone and connect both WhatsApp and Brave Sync."
-brave-browser web.whatsapp.com brave://settings/braveSync github.com/login &
+brave-browser https://web.whatsapp.com brave://settings/braveSync https://github.com/login &
 
 # --------------------------------------------------------------
 # Completion message
