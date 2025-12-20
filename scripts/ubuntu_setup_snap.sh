@@ -105,7 +105,7 @@ run_step 6 "Installing Brave Browser (stable + nightly)" bash -c '
 # 7️⃣ Configure Git
 # --------------------------------------------------------------
 run_step 7 "Configuring Git" bash -c '
-    git config --global core.editor "code"
+    git config --global core.editor "code --wait"
     git config --global user.name "a49ty1m"
     git config --global user.email "a4920251m@gmail.com"
 '

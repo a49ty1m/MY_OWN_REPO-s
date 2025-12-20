@@ -9,7 +9,7 @@ sudo apt-get install -y tldr ncdu git curl vim nano vlc gparted calibre
 echo "Core packages installed."
 
 # Refresh tldr pages
-tldr -update
+tldr --update
 echo "tldr pages updated."
 
 # -------------------------------------------------
