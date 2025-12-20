@@ -1,0 +1,40 @@
+# Log files
+*.log
+ubuntu-setup.log
+
+# Step tracking files
+.ubuntu-setup-step
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+dist/
+build/
+*.o
+*.so
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.Python
+venv/
+env/
+
+# Node
+node_modules/
+npm-debug.log
