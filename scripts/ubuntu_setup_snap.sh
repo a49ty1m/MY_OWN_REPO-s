@@ -68,10 +68,11 @@ run_step 3 "Ensuring snapd is installed" bash -c '
 # --------------------------------------------------------------
 # 4️⃣ Install apps via Snap
 # --------------------------------------------------------------
-run_step 4 "Installing Notion, Discord, and Notion Calendar" bash -c '
+run_step 4 "Installing Notion, Discord, Telegram, and Notion Calendar" bash -c '
     sudo snap install notion-desktop --classic || true
     sudo snap install discord || true
     sudo snap install notion-calendar-snap || true
+    sudo snap install telegram-desktop || true
 '
 
 # --------------------------------------------------------------
