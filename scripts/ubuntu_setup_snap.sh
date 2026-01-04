@@ -7,6 +7,25 @@ set -euo pipefail
 LOG_FILE="$HOME/ubuntu-setup.log"
 STEP_FILE="$HOME/.ubuntu-setup-step"
 
+# --------------------------------------------------------------
+# Reset option
+# --------------------------------------------------------------
+if [[ "${1:-}" == "--reset" ]]; then
+    rm -f "$STEP_FILE"
+    echo "Reset complete.  Rerun script to start fresh."
+    exit 0
+fi
+
+# --------------------------------------------------------------
+# Check if running on Ubuntu
+# --------------------------------------------------------------
+if [[ !  -f /etc/os-release ]] || !  grep -q "Ubuntu" /etc/os-release; then
+    echo "⚠️  This script is designed for Ubuntu."
+    read -p "Continue anyway? (y/N) " -n 1 -r
+    echo
+    [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+fi
+
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "============================================================"
@@ -89,7 +108,7 @@ run_step 6 "Installing Brave Browser (stable + nightly)" bash -c '
     install_brave() {
         local channel="$1"
         local script="/tmp/brave-${channel}.sh"
-        curl -fsS https://dl.brave.com/install.sh -o "$script"
+        curl -fsS https://dl.brave.com/install. sh -o "$script"
         if [[ "$channel" == "stable" ]]; then
             sudo bash "$script"
         else
@@ -131,9 +150,37 @@ run_step 9 "Launching Brave with useful tabs" bash -c '
 '
 
 # --------------------------------------------------------------
+# 🔟 Install development tools
+# --------------------------------------------------------------
+run_step 10 "Installing development tools" bash -c '
+    sudo apt-get install -y build-essential gcc g++ make
+    sudo apt-get install -y git-lfs
+'
+
+# --------------------------------------------------------------
+# 1️⃣1️⃣ Install shell enhancements
+# --------------------------------------------------------------
+run_step 11 "Installing shell enhancements" bash -c '
+    sudo apt-get install -y zsh
+    # Optionally install oh-my-zsh (uncomment if desired)
+    # sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || true
+'
+
+# --------------------------------------------------------------
+# 1️⃣2️⃣ System cleanup
+# --------------------------------------------------------------
+run_step 12 "Cleaning up" bash -c '
+    sudo apt-get autoremove -y
+    sudo apt-get autoclean -y
+'
+
+# --------------------------------------------------------------
 # Completion message
 # --------------------------------------------------------------
 echo "============================================================"
 echo "✅ Ubuntu setup completed successfully at $(date)"
 echo "Log: $LOG_FILE"
 echo "============================================================"
+echo ""
+echo "⚠️  Some changes may require a reboot to take effect."
+echo "Run: sudo reboot"
