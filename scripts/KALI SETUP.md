@@ -133,6 +133,7 @@ This script automates the entire post-installation setup. Save as `kali-setup.sh
 #!/bin/bash
 set -euo pipefail
 
+# Configuration
 ZSH_CUSTOM_DIR="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
 SHARE_TAG="kali_share"
 SHARE_POINT="$HOME/Desktop/SharedFolder"
@@ -140,92 +141,133 @@ SHARE_POINT="$HOME/Desktop/SharedFolder"
 echo "Starting Kali Linux setup..."
 
 # 1. UPDATE SYSTEM & MODERN TOOLS
-echo "[1/9] Updating system..."
+echo "[1/8] Updating system and installing base tools..."
 sudo apt update && sudo apt upgrade -y
-# Added: fonts-powerline (for Agnoster) and build-essential
+# Note: On Kali, some tools have specific names: bat -> batcat, fd-find -> fdfind
 sudo apt install -y zsh tealdeer ncdu git git-lfs curl vim nano build-essential \
 gcc g++ make fzf fastfetch fonts-powerline wget gpg unzip terminator htop tree jq \
 bat eza ripgrep fd-find tmux p7zip-full python3-pip python3-venv pipx fonts-liberation
 
-# 2. KVM GUEST AGENTS
-echo "[2/9] Installing KVM guest agents..."
+# Install fresh
+if ! command -v fresh &> /dev/null; then
+    echo "Installing fresh..."
+    curl -fsSL https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh
+else
+    echo "fresh is already installed, skipping..."
+fi
+
+# 2. KVM GUEST AGENTS (For VMs)
+echo "[2/8] Installing KVM guest agents..."
 sudo apt install -y qemu-guest-agent spice-vdagent
 sudo systemctl enable --now qemu-guest-agent spice-vdagent || true
 
 # 3. SECURITY TOOLS & WORDLISTS
-echo "[3/9] Installing tools..."
+echo "[3/8] Installing Kali security tools..."
 sudo apt install -y seclists wordlists kali-tools-web kali-tools-passwords \
 kali-tools-exploitation kali-tools-sniffing-spoofing nmap metasploit-framework \
-gobuster feroxbuster sqlmap nikto rustscan john hashcat hydra bloodhound neo4j
+gobuster feroxbuster sqlmap nikto john hashcat hydra bloodhound neo4j
 
-[ -f /usr/share/wordlists/rockyou.txt.gz ] && sudo gunzip -f /usr/share/wordlists/rockyou.txt.gz
-
-# 4. BRAVE NIGHTLY
-echo "[4/9] Installing Brave Nightly..."
-if ! command -v brave-browser-nightly &> /dev/null; then
-    curl --fsSL https://dl.brave.com/install.sh | CHANNEL=nightly sh
+# Unzip rockyou if it exists
+if [ -f /usr/share/wordlists/rockyou.txt.gz ]; then
+    echo "Unzipping rockyou.txt.gz..."
+    sudo gunzip -f /usr/share/wordlists/rockyou.txt.gz
 fi
 
-# 5. NODE (NVM) & GEMINI CLI SETUP
-echo "[5/9] Setting up NVM and Gemini CLI..."
+# 4. BRAVE NIGHTLY
+echo "[4/8] Installing Brave Nightly..."
+if ! command -v brave-browser-nightly &> /dev/null; then
+    curl -fsSL https://dl.brave.com/install.sh | CHANNEL=nightly sh
+fi
+
+# 5. NODE (NVM) SETUP
+echo "[5/8] Setting up NVM..."
 if [ ! -d "$HOME/.nvm" ]; then
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
 fi
 
 # Load NVM for the rest of this script session
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
-nvm install 20
-nvm use 20
-npm install -g @google/gemini-cli
+nvm install 20 --lts || nvm install 20
 
 # 6. ZSH & OH-MY-ZSH SETUP
-echo "[6/9] Setting up Zsh..."
+echo "[6/8] Setting up Zsh and Oh My Zsh..."
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
-    sh -c "$(curl --fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
 fi
 
+# Ensure ZSH_CUSTOM_DIR is correctly set if Oh My Zsh was just installed
+ZSH_CUSTOM_DIR="$HOME/.oh-my-zsh/custom"
+mkdir -p "$ZSH_CUSTOM_DIR/plugins"
+
 function clone_plugin() {
-    [ ! -d "$ZSH_CUSTOM_DIR/plugins/$2" ] && git clone --depth 1 "$1" "$ZSH_CUSTOM_DIR/plugins/$2"
+    local repo_url=$1
+    local plugin_name=$2
+    if [ ! -d "$ZSH_CUSTOM_DIR/plugins/$plugin_name" ]; then
+        echo "Cloning plugin: $plugin_name"
+        git clone --depth 1 "$repo_url" "$ZSH_CUSTOM_DIR/plugins/$plugin_name"
+    fi
 }
 
 clone_plugin "https://github.com/zsh-users/zsh-autosuggestions" "zsh-autosuggestions"
 clone_plugin "https://github.com/zsh-users/zsh-syntax-highlighting.git" "zsh-syntax-highlighting"
 
-# Configure .zshrc
-sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="agnoster"/' "$HOME/.zshrc"
-sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting fzf sudo)/' "$HOME/.zshrc"
+# Configure .zshrc Theme and Plugins
+echo "Configuring .zshrc theme and plugins..."
+sed -i 's/^ZSH_THEME=.*/ZSH_THEME="agnoster"/' "$HOME/.zshrc"
 
-# Add aliases and NVM loading to .zshrc for future sessions
-{
-    echo 'alias cat="batcat"'
-    echo 'alias ls="eza --icons"'
-    echo 'alias fd="fdfind"'
-    echo 'export NVM_DIR="$HOME/.nvm"'
-    echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"'
-} >> "$HOME/.zshrc"
+# More robust plugin insertion: adds plugins to the list if they aren't already there
+for plugin in zsh-autosuggestions zsh-syntax-highlighting fzf sudo; do
+    if ! grep -q "$plugin" "$HOME/.zshrc"; then
+        sed -i "/^plugins=(/ s/)/ $plugin)/" "$HOME/.zshrc"
+    fi
+done
+
+# Add aliases and NVM loading to .zshrc (IDEMPOTENT)
+if ! grep -q "Custom Config Added by mysetup.sh" "$HOME/.zshrc"; then
+    cat << 'EOF' >> "$HOME/.zshrc"
+
+# Custom Config Added by mysetup.sh
+alias cat="batcat"
+alias ls="eza --icons"
+alias l="eza -lh --icons"
+alias la="eza -lah --icons"
+alias fd="fdfind"
+alias help="tldr"
+
+# NVM Setup
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
+# Start fastfetch if available
+command -v fastfetch >/dev/null && fastfetch
+EOF
+fi
 
 # 7. PYTHON PIPX TOOLS
-echo "[7/9] Pipx setup..."
+echo "[7/8] Installing tools via pipx..."
 pipx ensurepath
 pipx install impacket || true
 
-# 8. SHARED FOLDER (9p)
-echo "[8/9] Shared folder..."
+# 8. SHARED FOLDER (9p for VMs)
+echo "[8/8] Configuring Shared folder..."
 mkdir -p "$SHARE_POINT"
 if ! grep -q "$SHARE_TAG" /etc/fstab; then
     echo "$SHARE_TAG $SHARE_POINT 9p trans=virtio,version=9p2000.L,rw,_netdev,nofail 0 0" | sudo tee -a /etc/fstab
     sudo mount "$SHARE_POINT" || true
 fi
 
-# 9. CLEANUP
-echo "[9/9] Finalizing..."
+# CLEANUP & FINALIZING
+echo "Finalizing setup..."
 sudo apt autoremove -y
 sudo chsh -s $(which zsh) $USER
 tldr --update || true
 
+echo "-----------------------------------------------------------"
 echo "KALI SETUP COMPLETE. PLEASE REBOOT."
+echo "-----------------------------------------------------------"
 ```
 
 ---
