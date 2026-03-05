@@ -34,7 +34,6 @@ SCRIPT_FAILED=0
 
 log_info() { echo "[INFO] $1"; }
 log_warn() { echo "[WARN] $1"; }
-log_step() { echo; echo "========== $1 =========="; }
 
 start_step() {
     STEP_TOTAL=$((STEP_TOTAL + 1))
@@ -55,14 +54,14 @@ skip_step() {
 
 on_error() {
     SCRIPT_FAILED=1
-    STEP_FAIL=1
+    STEP_FAIL=$((STEP_FAIL + 1))
     echo -e "${RED}[FAIL]${NC} ${CURRENT_STEP:-unknown step} (line $1)"
 }
 
 die() {
     local msg="$1"
     SCRIPT_FAILED=1
-    STEP_FAIL=1
+    STEP_FAIL=$((STEP_FAIL + 1))
     echo -e "${RED}[FAIL]${NC} ${CURRENT_STEP:-unknown step}: $msg"
     exit 1
 }
@@ -158,7 +157,7 @@ pass_step
 
 start_step "6. KVM host setup (Ubuntu host for Kali guest)"
 if [ "$INSTALL_KVM_HOST" = true ]; then
-    if [ "$(egrep -c '(vmx|svm)' /proc/cpuinfo)" -eq 0 ]; then
+    if [ "$(grep -Ec '(vmx|svm)' /proc/cpuinfo)" -eq 0 ]; then
         log_warn "CPU virtualization flags (vmx/svm) not detected. Check BIOS/UEFI virtualization settings."
     fi
 
