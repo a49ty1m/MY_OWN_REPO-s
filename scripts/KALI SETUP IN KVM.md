@@ -8,13 +8,13 @@
 
 ### Step 1: Create the Virtual Machine
 
-| Setting | Recommended Value | Notes |
-|---------|-------------------|-------|
-| **Installation Method** | ISO image | Download from [kali.org](https://www.kali.org/get-kali/) |
-| **OS Type** | Debian 12/13 | Select the closest match available |
-| **RAM** | 8192 MiB (8 GB) | Minimum 4 GB; 8 GB recommended for smooth operation |
-| **CPU Cores** | 8 cores | Adjust based on your host CPU |
-| **Disk Space** | 60–96 GiB | 60 GiB minimum; 96 GiB if running multiple tools |
+| Setting                 | Recommended Value | Notes                                                    |
+| ----------------------- | ----------------- | -------------------------------------------------------- |
+| **Installation Method** | ISO image         | Download from [kali.org](https://www.kali.org/get-kali/) |
+| **OS Type**             | Debian 12/13      | Select the closest match available                       |
+| **RAM**                 | 8192 MiB (8 GB)   | Minimum 4 GB; 8 GB recommended for smooth operation      |
+| **CPU Cores**           | 8 cores           | Adjust based on your host CPU                            |
+| **Disk Space**          | 60–96 GiB         | 60 GiB minimum; 96 GiB if running multiple tools         |
 
 ### Step 2: Complete Installation
 
