@@ -1,6 +1,9 @@
 #!/bin/bash
 
 set -euo pipefail
+umask 022
+
+export DEBIAN_FRONTEND=noninteractive
 
 # --- CONFIGURATION ---
 USER_NAME="a49ty1m"
@@ -14,10 +17,13 @@ INSTALL_BRAVE=true
 INSTALL_SNAP_APPS=true
 INSTALL_KVM_HOST=true
 INSTALL_THEME=true
+INSTALL_FRESH=true
 
 LOG_FILE="$HOME/.local/state/ubuntu-kvm-setup.log"
 mkdir -p "$(dirname "$LOG_FILE")"
 exec > >(tee -a "$LOG_FILE") 2>&1
+
+LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/ubuntu-kvm-setup.lock"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -34,6 +40,34 @@ SCRIPT_FAILED=0
 
 log_info() { echo "[INFO] $1"; }
 log_warn() { echo "[WARN] $1"; }
+
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+acquire_lock() {
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        if [ -f "$LOCK_DIR/pid" ]; then
+            lock_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+            if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+                log_warn "Removing stale setup lock from dead PID $lock_pid"
+                rm -rf "$LOCK_DIR"
+                mkdir "$LOCK_DIR"
+            else
+                die "Another setup instance appears to be running (lock: $LOCK_DIR)."
+            fi
+        else
+            die "Another setup instance appears to be running (lock: $LOCK_DIR)."
+        fi
+    fi
+    echo "$$" > "$LOCK_DIR/pid"
+}
+
+release_lock() {
+    if [ -d "$LOCK_DIR" ]; then
+        rm -rf "$LOCK_DIR"
+    fi
+}
 
 start_step() {
     STEP_TOTAL=$((STEP_TOTAL + 1))
@@ -80,7 +114,9 @@ print_summary() {
 }
 
 trap 'on_error $LINENO' ERR
-trap 'print_summary' EXIT
+trap 'release_lock; print_summary' EXIT
+
+acquire_lock
 
 start_step "Pre-flight checks"
 if [ "$EUID" -eq 0 ]; then
@@ -104,15 +140,34 @@ log_info "Starting Ubuntu host setup for Kali-in-KVM workflow"
 log_info "Log file: $LOG_FILE"
 
 start_step "1. System update and core packages"
-sudo apt update && sudo apt upgrade -y
+sudo apt-get update
+sudo apt-get upgrade -y
 sudo apt-get install -y zsh tldr ncdu git git-lfs curl vim nano vlc gparted calibre gh \
-build-essential gcc g++ make fzf neofetch fonts-powerline wget gpg gnome-tweaks unzip \
+build-essential gcc g++ make fzf fonts-powerline wget gpg gnome-tweaks unzip \
 python3 python3-pip software-properties-common ca-certificates
 pass_step
 
-start_step "2. MariaDB setup"
+start_step "2. Fastfetch install and Neofetch removal"
+if ! grep -Rqs "ppa.launchpadcontent.net/zhangsongcui3371/fastfetch/ubuntu" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+    sudo add-apt-repository -y ppa:zhangsongcui3371/fastfetch
+    sudo apt-get update
+else
+    log_info "Fastfetch PPA already configured"
+fi
+
+sudo apt-get install -y fastfetch
+
+if dpkg -s neofetch >/dev/null 2>&1; then
+    sudo apt-get remove --purge -y neofetch
+    log_info "Removed neofetch"
+else
+    log_info "neofetch is not installed"
+fi
+pass_step
+
+start_step "3. MariaDB setup"
 if [ "$INSTALL_MARIADB" = true ]; then
-    sudo apt install -y mariadb-server mariadb-client mycli
+    sudo apt-get install -y mariadb-server mariadb-client mycli
     sudo systemctl enable --now mariadb
 
     if [ "$RUN_DB_HARDENING" = true ]; then
@@ -128,47 +183,76 @@ else
     skip_step
 fi
 
-start_step "3. Brave install (kept as requested)"
+start_step "4. Brave install (kept as requested)"
 if [ "$INSTALL_BRAVE" = true ]; then
-    echo "Installing Brave Stable and Nightly..."
-    curl -fsS https://dl.brave.com/install.sh | sh
-    curl -fsS https://dl.brave.com/install.sh | CHANNEL=nightly sh
+    if ! command_exists brave-browser; then
+        echo "Installing Brave Stable..."
+        curl -fsSL https://dl.brave.com/install.sh | sh
+    else
+        log_info "Brave Stable already installed"
+    fi
+
+    if ! command_exists brave-browser-nightly; then
+        echo "Installing Brave Nightly..."
+        curl -fsSL https://dl.brave.com/install.sh | CHANNEL=nightly sh
+    else
+        log_info "Brave Nightly already installed"
+    fi
     pass_step
 else
     log_info "Brave install disabled"
     skip_step
 fi
 
-start_step "4. Snap applications"
+start_step "5. Snap applications"
 if [ "$INSTALL_SNAP_APPS" = true ]; then
-    sudo snap refresh
-    sudo snap install discord || log_warn "discord already installed or failed"
-    sudo snap install telegram-desktop || log_warn "telegram-desktop already installed or failed"
-    pass_step
+    if command_exists snap; then
+        sudo snap refresh
+
+        for app in discord telegram-desktop; do
+            if snap list "$app" >/dev/null 2>&1; then
+                sudo snap refresh "$app" || log_warn "$app refresh failed"
+            else
+                sudo snap install "$app" || log_warn "$app install failed"
+            fi
+        done
+        pass_step
+    else
+        log_warn "snap command not found; skipping Snap applications step"
+        skip_step
+    fi
 else
     log_info "Snap app setup disabled"
     skip_step
 fi
 
-start_step "5. Git configuration"
+start_step "6. Git configuration"
 git config --global user.name "$USER_NAME"
 git config --global user.email "$USER_EMAIL"
 pass_step
 
-start_step "6. KVM host setup (Ubuntu host for Kali guest)"
+start_step "7. KVM host setup (Ubuntu host for Kali guest)"
 if [ "$INSTALL_KVM_HOST" = true ]; then
     if [ "$(grep -Ec '(vmx|svm)' /proc/cpuinfo)" -eq 0 ]; then
         log_warn "CPU virtualization flags (vmx/svm) not detected. Check BIOS/UEFI virtualization settings."
     fi
 
-    sudo apt install -y qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
+    sudo apt-get install -y qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
     virt-manager virtinst libosinfo-bin bridge-utils cpu-checker ovmf swtpm dnsmasq-base \
     spice-client-gtk
 
-    kvm-ok || log_warn "kvm-ok reported issues; verify BIOS virtualization and kernel modules"
+    if command_exists kvm-ok; then
+        kvm-ok || log_warn "kvm-ok reported issues; verify BIOS virtualization and kernel modules"
+    else
+        log_warn "kvm-ok not found; install/check cpu-checker package manually if needed"
+    fi
 
-    sudo adduser "$USER" libvirt || true
-    sudo adduser "$USER" kvm || true
+    if ! id -nG "$USER" | grep -qw libvirt; then
+        sudo usermod -aG libvirt "$USER"
+    fi
+    if ! id -nG "$USER" | grep -qw kvm; then
+        sudo usermod -aG kvm "$USER"
+    fi
     sudo systemctl enable --now libvirtd
 
     # Ensure default libvirt network is available for NAT-based Kali VM networking.
@@ -186,7 +270,7 @@ else
     skip_step
 fi
 
-start_step "7. Zsh and Oh My Zsh"
+start_step "8. Zsh and Oh My Zsh"
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
     echo "Installing Oh My Zsh..."
     RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
@@ -200,73 +284,116 @@ fi
 if [ ! -d "$ZSH_CUSTOM_DIR/plugins/zsh-syntax-highlighting" ]; then
     git clone --depth 1 https://github.com/zsh-users/zsh-syntax-highlighting.git "$ZSH_CUSTOM_DIR/plugins/zsh-syntax-highlighting"
 fi
+if [ ! -d "$ZSH_CUSTOM_DIR/plugins/zsh-history-substring-search" ]; then
+    git clone --depth 1 https://github.com/zsh-users/zsh-history-substring-search "$ZSH_CUSTOM_DIR/plugins/zsh-history-substring-search"
+fi
+if [ ! -d "$ZSH_CUSTOM_DIR/plugins/zsh-completions" ]; then
+    git clone --depth 1 https://github.com/zsh-users/zsh-completions "$ZSH_CUSTOM_DIR/plugins/zsh-completions"
+fi
 
 if [ ! -f "$HOME/.zshrc" ]; then
     cp "$HOME/.oh-my-zsh/templates/zshrc.zsh-template" "$HOME/.zshrc"
 fi
 
 if grep -q '^ZSH_THEME=' "$HOME/.zshrc"; then
-    sed -i 's|^ZSH_THEME=.*|ZSH_THEME="agnoster"|' "$HOME/.zshrc"
+    sed -i 's|^ZSH_THEME=.*|ZSH_THEME="robbyrussell"|' "$HOME/.zshrc"
 else
-    echo 'ZSH_THEME="agnoster"' >> "$HOME/.zshrc"
+    echo 'ZSH_THEME="robbyrussell"' >> "$HOME/.zshrc"
 fi
 
 if grep -q '^plugins=(' "$HOME/.zshrc"; then
-    sed -i 's|^plugins=.*|plugins=(git zsh-autosuggestions zsh-syntax-highlighting fzf)|' "$HOME/.zshrc"
+    sed -i 's|^plugins=.*|plugins=(git sudo fzf z extract dirhistory copypath copyfile history command-not-found zsh-autosuggestions zsh-completions zsh-history-substring-search zsh-syntax-highlighting)|' "$HOME/.zshrc"
 else
-    echo 'plugins=(git zsh-autosuggestions zsh-syntax-highlighting fzf)' >> "$HOME/.zshrc"
+    echo 'plugins=(git sudo fzf z extract dirhistory copypath copyfile history command-not-found zsh-autosuggestions zsh-completions zsh-history-substring-search zsh-syntax-highlighting)' >> "$HOME/.zshrc"
 fi
 pass_step
 
-start_step "8. Catppuccin theme setup"
+start_step "9. Fresh shell prompt setup"
+if [ "$INSTALL_FRESH" = true ]; then
+    if command_exists fresh; then
+        log_info "fresh is already installed"
+    else
+        curl -fsSL https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh
+    fi
+    pass_step
+else
+    log_info "Fresh setup disabled"
+    skip_step
+fi
+
+start_step "10. Catppuccin theme setup"
 if [ "$INSTALL_THEME" = true ]; then
     mkdir -p "$HOME/.themes" "$HOME/.icons"
 
+    theme_tmp_dir="$(mktemp -d)"
+
     (
-        cd /tmp || exit
-        rm -rf gtk
+        cd "$theme_tmp_dir" || exit
         git clone --depth 1 https://github.com/catppuccin/gtk.git
         cd gtk
         python3 install.py mocha blue
     )
 
     echo "Installing Papirus icons and applying Catppuccin flavor..."
-    sudo add-apt-repository -y ppa:papirus/papirus
-    sudo apt update
-    sudo apt install -y papirus-icon-theme
+    if ! grep -Rqs "ppa.launchpadcontent.net/papirus/papirus/ubuntu" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+        sudo add-apt-repository -y ppa:papirus/papirus
+        sudo apt-get update
+    fi
+    sudo apt-get install -y papirus-icon-theme
+
+    papirus_folders_cmd=""
+    if command_exists papirus-folders; then
+        papirus_folders_cmd="$(command -v papirus-folders)"
+    else
+        papirus_folders_cmd="$theme_tmp_dir/papirus-folders"
+        curl -fsSL https://raw.githubusercontent.com/PapirusDevelopmentTeam/papirus-folders/master/papirus-folders -o "$papirus_folders_cmd"
+        chmod +x "$papirus_folders_cmd"
+    fi
+
     (
-        cd /tmp || exit
-        rm -rf papirus-folders
+        cd "$theme_tmp_dir" || exit
         git clone --depth 1 https://github.com/catppuccin/papirus-folders.git
         cd papirus-folders
         sudo cp -r src/* /usr/share/icons/Papirus
-        ./papirus-folders -C cat-mocha-blue --theme Papirus-Dark
+        "$papirus_folders_cmd" -C cat-mocha-blue --theme Papirus-Dark
     )
 
     echo "Installing Catppuccin cursor theme..."
-    curl -LOsS https://github.com/catppuccin/cursors/releases/download/v2.0.0/catppuccin-mocha-blue-cursors.zip
-    unzip -o catppuccin-mocha-blue-cursors.zip -d "$HOME/.icons"
-    rm -f catppuccin-mocha-blue-cursors.zip
+    cursor_zip="$theme_tmp_dir/catppuccin-mocha-blue-cursors.zip"
+    curl -fsSL https://github.com/catppuccin/cursors/releases/download/v2.0.0/catppuccin-mocha-blue-cursors.zip -o "$cursor_zip"
+    unzip -o "$cursor_zip" -d "$HOME/.icons"
 
-    echo "Installing Catppuccin theme for GNOME Terminal..."
-    curl -L https://raw.githubusercontent.com/catppuccin/gnome-terminal/v1.0.0/install.py | python3 -
+    if [ -n "${DISPLAY:-}" ] && command_exists gsettings; then
+        echo "Installing Catppuccin theme for GNOME Terminal..."
+        curl -fsSL https://raw.githubusercontent.com/catppuccin/gnome-terminal/v1.0.0/install.py | python3 -
 
-    gsettings set org.gnome.desktop.interface gtk-theme "catppuccin-mocha-blue-standard+default"
-    gsettings set org.gnome.desktop.interface icon-theme "Papirus-Dark"
-    gsettings set org.gnome.desktop.interface cursor-theme "catppuccin-mocha-blue-cursors"
+        gsettings set org.gnome.desktop.interface gtk-theme "catppuccin-mocha-blue-standard+default"
+        gsettings set org.gnome.desktop.interface icon-theme "Papirus-Dark"
+        gsettings set org.gnome.desktop.interface cursor-theme "catppuccin-mocha-blue-cursors"
+    else
+        log_warn "Skipping gsettings/GNOME Terminal theme apply (no GUI session detected)."
+    fi
+
+    rm -rf "$theme_tmp_dir"
     pass_step
 else
     log_info "Theme setup disabled"
     skip_step
 fi
 
-start_step "9. Final cleanup"
+start_step "11. Final cleanup"
 sudo apt-get autoremove -y
 sudo apt-get autoclean -y
-sudo chsh -s "$(which zsh)" "$USER"
+zsh_path="$(command -v zsh)"
+current_shell="$(getent passwd "$USER" | cut -d: -f7)"
+if [ "$current_shell" != "$zsh_path" ]; then
+    sudo chsh -s "$zsh_path" "$USER"
+else
+    log_info "Default shell is already zsh"
+fi
 pass_step
 
-start_step "10. Post-setup helpers for Kali guest"
+start_step "12. Post-setup helpers for Kali guest"
 cat << 'EOF'
 Inside Kali guest (recommended), run:
   sudo apt update && sudo apt install -y qemu-guest-agent spice-vdagent
