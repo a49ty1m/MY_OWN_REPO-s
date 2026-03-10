@@ -18,6 +18,14 @@ INSTALL_SNAP_APPS=true
 INSTALL_KVM_HOST=true
 INSTALL_THEME=true
 INSTALL_FRESH=true
+INSTALL_EZA=true
+INSTALL_NERD_FONT=true
+
+# Nerd Font config
+NERD_FONT_NAME="Hack"
+NERD_FONT_URL="https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/Hack.zip"
+NERD_FONT_TERMINAL_FACE="Hack Nerd Font Mono"
+NERD_FONT_SIZE="12"
 
 LOG_FILE="$HOME/.local/state/ubuntu-kvm-setup.log"
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -38,8 +46,23 @@ STEP_FAIL=0
 CURRENT_STEP=""
 SCRIPT_FAILED=0
 
-log_info() { echo "[INFO] $1"; }
-log_warn() { echo "[WARN] $1"; }
+log_info() { echo "[$(date '+%H:%M:%S')] [INFO] $1"; }
+log_warn() { echo "[$(date '+%H:%M:%S')] [WARN] $1"; }
+
+# Retry wrapper for flaky network commands (3 attempts, 5s delay)
+retry() {
+    local n=1 max=3 delay=5
+    while true; do
+        "$@" && return 0
+        if (( n >= max )); then
+            log_warn "Command failed after $max attempts: $*"
+            return 1
+        fi
+        log_warn "Attempt $n/$max failed. Retrying in ${delay}s..."
+        sleep $delay
+        (( n++ ))
+    done
+}
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -114,9 +137,14 @@ print_summary() {
 }
 
 trap 'on_error $LINENO' ERR
-trap 'release_lock; print_summary' EXIT
 
 acquire_lock
+
+# Keep sudo credentials alive in the background for long-running steps.
+sudo -v
+while true; do sudo -n true; sleep 55; done 2>/dev/null &
+SUDO_KEEPALIVE_PID=$!
+trap 'kill $SUDO_KEEPALIVE_PID 2>/dev/null; release_lock; print_summary' EXIT
 
 start_step "Pre-flight checks"
 if [ "$EUID" -eq 0 ]; then
@@ -125,10 +153,6 @@ fi
 
 if ! grep -qi "ubuntu" /etc/os-release; then
     die "This script is intended for Ubuntu host systems."
-fi
-
-if ! sudo -v; then
-    die "Sudo credentials are required."
 fi
 
 if ! getent hosts archive.ubuntu.com >/dev/null 2>&1; then
@@ -140,34 +164,52 @@ log_info "Starting Ubuntu host setup for Kali-in-KVM workflow"
 log_info "Log file: $LOG_FILE"
 
 start_step "1. System update and core packages"
-sudo apt-get update
-sudo apt-get upgrade -y
-sudo apt-get install -y zsh tldr ncdu git git-lfs curl vim nano vlc gparted calibre gh \
-build-essential gcc g++ make fzf fonts-powerline wget gpg gnome-tweaks unzip \
+retry sudo apt-get update
+retry sudo apt-get upgrade -y
+retry sudo apt-get install -y zsh tldr ncdu git git-lfs curl vim nano vlc gparted calibre gh \
+build-essential gcc g++ make fzf bat wget gpg gnome-tweaks htop unzip \
 python3 python3-pip software-properties-common ca-certificates
 pass_step
 
-start_step "2. Fastfetch install and Neofetch removal"
+start_step "2. Fastfetch install"
 if ! grep -Rqs "ppa.launchpadcontent.net/zhangsongcui3371/fastfetch/ubuntu" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
     sudo add-apt-repository -y ppa:zhangsongcui3371/fastfetch
-    sudo apt-get update
+    retry sudo apt-get update
 else
     log_info "Fastfetch PPA already configured"
 fi
 
-sudo apt-get install -y fastfetch
-
-if dpkg -s neofetch >/dev/null 2>&1; then
-    sudo apt-get remove --purge -y neofetch
-    log_info "Removed neofetch"
-else
-    log_info "neofetch is not installed"
-fi
+retry sudo apt-get install -y fastfetch
 pass_step
 
-start_step "3. MariaDB setup"
+start_step "3. eza installation"
+if [ "$INSTALL_EZA" = true ]; then
+    if command_exists eza; then
+        log_info "eza is already installed"
+    else
+        if apt-cache show eza >/dev/null 2>&1; then
+            retry sudo apt-get install -y eza
+        else
+            if ! grep -Rqs "deb.gierens.de" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+                wget -qO- https://raw.githubusercontent.com/eza-community/eza/main/deb.asc \
+                | sudo gpg --yes --dearmor -o /etc/apt/keyrings/gierens.gpg
+                echo "deb [signed-by=/etc/apt/keyrings/gierens.gpg] http://deb.gierens.de stable main" \
+                | sudo tee /etc/apt/sources.list.d/gierens.list >/dev/null
+                sudo chmod 644 /etc/apt/keyrings/gierens.gpg /etc/apt/sources.list.d/gierens.list
+                retry sudo apt-get update
+            fi
+            retry sudo apt-get install -y eza
+        fi
+    fi
+    pass_step
+else
+    log_info "eza install disabled"
+    skip_step
+fi
+
+start_step "4. MariaDB setup"
 if [ "$INSTALL_MARIADB" = true ]; then
-    sudo apt-get install -y mariadb-server mariadb-client mycli
+    retry sudo apt-get install -y mariadb-server mariadb-client mycli
     sudo systemctl enable --now mariadb
 
     if [ "$RUN_DB_HARDENING" = true ]; then
@@ -183,18 +225,18 @@ else
     skip_step
 fi
 
-start_step "4. Brave install (kept as requested)"
+start_step "5. Brave browser install"
 if [ "$INSTALL_BRAVE" = true ]; then
     if ! command_exists brave-browser; then
-        echo "Installing Brave Stable..."
-        curl -fsSL https://dl.brave.com/install.sh | sh
+        log_info "Installing Brave Stable..."
+        retry bash -c 'curl -fsSL https://dl.brave.com/install.sh | sh'
     else
         log_info "Brave Stable already installed"
     fi
 
     if ! command_exists brave-browser-nightly; then
-        echo "Installing Brave Nightly..."
-        curl -fsSL https://dl.brave.com/install.sh | CHANNEL=nightly sh
+        log_info "Installing Brave Nightly..."
+        retry bash -c 'curl -fsSL https://dl.brave.com/install.sh | CHANNEL=nightly sh'
     else
         log_info "Brave Nightly already installed"
     fi
@@ -204,7 +246,7 @@ else
     skip_step
 fi
 
-start_step "5. Snap applications"
+start_step "6. Snap applications"
 if [ "$INSTALL_SNAP_APPS" = true ]; then
     if command_exists snap; then
         sudo snap refresh
@@ -226,18 +268,18 @@ else
     skip_step
 fi
 
-start_step "6. Git configuration"
+start_step "7. Git configuration"
 git config --global user.name "$USER_NAME"
 git config --global user.email "$USER_EMAIL"
 pass_step
 
-start_step "7. KVM host setup (Ubuntu host for Kali guest)"
+start_step "8. KVM host setup (Ubuntu host for Kali guest)"
 if [ "$INSTALL_KVM_HOST" = true ]; then
     if [ "$(grep -Ec '(vmx|svm)' /proc/cpuinfo)" -eq 0 ]; then
         log_warn "CPU virtualization flags (vmx/svm) not detected. Check BIOS/UEFI virtualization settings."
     fi
 
-    sudo apt-get install -y qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
+    retry sudo apt-get install -y qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
     virt-manager virtinst libosinfo-bin bridge-utils cpu-checker ovmf swtpm dnsmasq-base \
     spice-client-gtk
 
@@ -270,10 +312,13 @@ else
     skip_step
 fi
 
-start_step "8. Zsh and Oh My Zsh"
+start_step "9. Zsh and Oh My Zsh"
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
-    echo "Installing Oh My Zsh..."
-    RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+    log_info "Installing Oh My Zsh..."
+    omz_installer="$(mktemp)"
+    retry curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -o "$omz_installer"
+    RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh "$omz_installer" --unattended
+    rm -f "$omz_installer"
 fi
 
 mkdir -p "$ZSH_CUSTOM_DIR/plugins"
@@ -306,14 +351,30 @@ if grep -q '^plugins=(' "$HOME/.zshrc"; then
 else
     echo 'plugins=(git sudo fzf z extract dirhistory copypath copyfile history command-not-found zsh-autosuggestions zsh-completions zsh-history-substring-search zsh-syntax-highlighting)' >> "$HOME/.zshrc"
 fi
+
+# Add eza and bat aliases if not already present.
+if ! grep -q 'alias ls=' "$HOME/.zshrc"; then
+    cat >> "$HOME/.zshrc" << 'ALIASES'
+
+# --- Custom aliases ---
+alias ls='eza --icons --group-directories-first'
+alias ll='eza -la --icons --group-directories-first'
+alias lt='eza --tree --icons --level=2'
+if command -v batcat >/dev/null 2>&1; then
+    alias cat='batcat --paging=never'
+elif command -v bat >/dev/null 2>&1; then
+    alias cat='bat --paging=never'
+fi
+ALIASES
+fi
 pass_step
 
-start_step "9. Fresh shell prompt setup"
+start_step "10. Fresh shell prompt setup"
 if [ "$INSTALL_FRESH" = true ]; then
     if command_exists fresh; then
         log_info "fresh is already installed"
     else
-        curl -fsSL https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh
+        retry bash -c 'curl -fsSL https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh'
     fi
     pass_step
 else
@@ -321,7 +382,7 @@ else
     skip_step
 fi
 
-start_step "10. Catppuccin theme setup"
+start_step "11. Catppuccin theme setup"
 if [ "$INSTALL_THEME" = true ]; then
     mkdir -p "$HOME/.themes" "$HOME/.icons"
 
@@ -334,12 +395,12 @@ if [ "$INSTALL_THEME" = true ]; then
         python3 install.py mocha blue
     )
 
-    echo "Installing Papirus icons and applying Catppuccin flavor..."
+    log_info "Installing Papirus icons and applying Catppuccin flavor..."
     if ! grep -Rqs "ppa.launchpadcontent.net/papirus/papirus/ubuntu" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
         sudo add-apt-repository -y ppa:papirus/papirus
-        sudo apt-get update
+        retry sudo apt-get update
     fi
-    sudo apt-get install -y papirus-icon-theme
+    retry sudo apt-get install -y papirus-icon-theme
 
     papirus_folders_cmd=""
     if command_exists papirus-folders; then
@@ -358,13 +419,13 @@ if [ "$INSTALL_THEME" = true ]; then
         "$papirus_folders_cmd" -C cat-mocha-blue --theme Papirus-Dark
     )
 
-    echo "Installing Catppuccin cursor theme..."
+    log_info "Installing Catppuccin cursor theme..."
     cursor_zip="$theme_tmp_dir/catppuccin-mocha-blue-cursors.zip"
     curl -fsSL https://github.com/catppuccin/cursors/releases/download/v2.0.0/catppuccin-mocha-blue-cursors.zip -o "$cursor_zip"
     unzip -o "$cursor_zip" -d "$HOME/.icons"
 
     if [ -n "${DISPLAY:-}" ] && command_exists gsettings; then
-        echo "Installing Catppuccin theme for GNOME Terminal..."
+        log_info "Installing Catppuccin theme for GNOME Terminal..."
         curl -fsSL https://raw.githubusercontent.com/catppuccin/gnome-terminal/v1.0.0/install.py | python3 -
 
         gsettings set org.gnome.desktop.interface gtk-theme "catppuccin-mocha-blue-standard+default"
@@ -381,7 +442,48 @@ else
     skip_step
 fi
 
-start_step "11. Final cleanup"
+start_step "12. Nerd Font install for terminal"
+if [ "$INSTALL_NERD_FONT" = true ]; then
+    FONT_DIR="$HOME/.local/share/fonts"
+    FONT_TARGET_DIR="$FONT_DIR/${NERD_FONT_NAME}NerdFont"
+    TERMINAL_FONT="${NERD_FONT_TERMINAL_FACE} ${NERD_FONT_SIZE}"
+
+    font_tmp_dir="$(mktemp -d)"
+    font_zip="$font_tmp_dir/${NERD_FONT_NAME}.zip"
+
+    log_info "Reinstalling ${NERD_FONT_NAME} Nerd Font and replacing existing files..."
+    rm -rf "$FONT_TARGET_DIR"
+    mkdir -p "$FONT_TARGET_DIR"
+    retry curl -fL "$NERD_FONT_URL" -o "$font_zip"
+    unzip -o "$font_zip" -d "$font_tmp_dir"
+
+    # Move only actual font files into Ubuntu's user font folder.
+    find "$font_tmp_dir" -type f \( -name "*.ttf" -o -name "*.otf" \) -exec mv -f {} "$FONT_TARGET_DIR/" \;
+    fc-cache -fv "$FONT_DIR"
+    rm -rf "$font_tmp_dir"
+
+    # Apply Nerd Font to GNOME interface and current GNOME Terminal profile.
+    if [ -n "${DISPLAY:-}" ] && command_exists gsettings; then
+        gsettings set org.gnome.desktop.interface monospace-font-name "$TERMINAL_FONT" || true
+
+        profile_id="$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")"
+        if [ -n "$profile_id" ]; then
+            gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${profile_id}/" use-system-font false || true
+            gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${profile_id}/" font "$TERMINAL_FONT" || true
+        else
+            log_warn "Could not resolve GNOME Terminal default profile for font apply."
+        fi
+    else
+        log_warn "Skipping Nerd Font terminal apply (no GUI session detected)."
+    fi
+
+    pass_step
+else
+    log_info "Nerd Font install disabled"
+    skip_step
+fi
+
+start_step "13. Final cleanup"
 sudo apt-get autoremove -y
 sudo apt-get autoclean -y
 zsh_path="$(command -v zsh)"
@@ -393,7 +495,7 @@ else
 fi
 pass_step
 
-start_step "12. Post-setup helpers for Kali guest"
+start_step "14. Post-setup helpers for Kali guest"
 cat << 'EOF'
 Inside Kali guest (recommended), run:
   sudo apt update && sudo apt install -y qemu-guest-agent spice-vdagent
@@ -404,8 +506,8 @@ For 9p shared folder in Kali /etc/fstab:
 EOF
 pass_step
 
-echo "Opening VS Code and Obsidian websites in Brave..."
-if command -v brave-browser >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
+log_info "Opening VS Code and Obsidian websites in Brave..."
+if command_exists brave-browser && [ -n "${DISPLAY:-}" ]; then
     brave-browser https://code.visualstudio.com https://obsidian.md/download &
 else
     log_warn "Skipping browser launch (brave-browser missing or no GUI session)."
