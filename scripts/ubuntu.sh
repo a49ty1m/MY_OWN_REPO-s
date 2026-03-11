@@ -19,6 +19,7 @@ INSTALL_KVM_HOST=true
 INSTALL_THEME=true
 INSTALL_FRESH=true
 INSTALL_EZA=true
+INSTALL_ZOXIDE=true
 INSTALL_NERD_FONT=true
 
 # Nerd Font config
@@ -207,7 +208,25 @@ else
     skip_step
 fi
 
-start_step "4. MariaDB setup"
+start_step "4. zoxide installation"
+if [ "$INSTALL_ZOXIDE" = true ]; then
+    if command_exists zoxide; then
+        log_info "zoxide is already installed"
+    else
+        if apt-cache show zoxide >/dev/null 2>&1; then
+            retry sudo apt-get install -y zoxide
+        else
+            log_info "zoxide not in apt repos, installing via official script..."
+            retry bash -c 'curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh'
+        fi
+    fi
+    pass_step
+else
+    log_info "zoxide install disabled"
+    skip_step
+fi
+
+start_step "5. MariaDB setup"
 if [ "$INSTALL_MARIADB" = true ]; then
     retry sudo apt-get install -y mariadb-server mariadb-client mycli
     sudo systemctl enable --now mariadb
@@ -225,7 +244,7 @@ else
     skip_step
 fi
 
-start_step "5. Brave browser install"
+start_step "6. Brave browser install"
 if [ "$INSTALL_BRAVE" = true ]; then
     if ! command_exists brave-browser; then
         log_info "Installing Brave Stable..."
@@ -246,7 +265,7 @@ else
     skip_step
 fi
 
-start_step "6. Snap applications"
+start_step "7. Snap applications"
 if [ "$INSTALL_SNAP_APPS" = true ]; then
     if command_exists snap; then
         sudo snap refresh
@@ -268,12 +287,12 @@ else
     skip_step
 fi
 
-start_step "7. Git configuration"
+start_step "8. Git configuration"
 git config --global user.name "$USER_NAME"
 git config --global user.email "$USER_EMAIL"
 pass_step
 
-start_step "8. KVM host setup (Ubuntu host for Kali guest)"
+start_step "9. KVM host setup (Ubuntu host for Kali guest)"
 if [ "$INSTALL_KVM_HOST" = true ]; then
     if [ "$(grep -Ec '(vmx|svm)' /proc/cpuinfo)" -eq 0 ]; then
         log_warn "CPU virtualization flags (vmx/svm) not detected. Check BIOS/UEFI virtualization settings."
@@ -312,7 +331,7 @@ else
     skip_step
 fi
 
-start_step "9. Zsh and Oh My Zsh"
+start_step "10. Zsh and Oh My Zsh"
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
     log_info "Installing Oh My Zsh..."
     omz_installer="$(mktemp)"
@@ -367,9 +386,18 @@ elif command -v bat >/dev/null 2>&1; then
 fi
 ALIASES
 fi
+
+# Add zoxide shell integration if installed and not already hooked in.
+if [ "$INSTALL_ZOXIDE" = true ] && ! grep -q 'zoxide init' "$HOME/.zshrc"; then
+    cat >> "$HOME/.zshrc" << 'ZOXIDE_INIT'
+
+# --- zoxide (smarter cd) ---
+eval "$(zoxide init zsh)"
+ZOXIDE_INIT
+fi
 pass_step
 
-start_step "10. Fresh shell prompt setup"
+start_step "11. Fresh shell prompt setup"
 if [ "$INSTALL_FRESH" = true ]; then
     if command_exists fresh; then
         log_info "fresh is already installed"
@@ -382,7 +410,7 @@ else
     skip_step
 fi
 
-start_step "11. Catppuccin theme setup"
+start_step "12. Catppuccin theme setup"
 if [ "$INSTALL_THEME" = true ]; then
     mkdir -p "$HOME/.themes" "$HOME/.icons"
 
@@ -442,7 +470,7 @@ else
     skip_step
 fi
 
-start_step "12. Nerd Font install for terminal"
+start_step "13. Nerd Font install for terminal"
 if [ "$INSTALL_NERD_FONT" = true ]; then
     FONT_DIR="$HOME/.local/share/fonts"
     FONT_TARGET_DIR="$FONT_DIR/${NERD_FONT_NAME}NerdFont"
@@ -483,7 +511,7 @@ else
     skip_step
 fi
 
-start_step "13. Final cleanup"
+start_step "14. Final cleanup"
 sudo apt-get autoremove -y
 sudo apt-get autoclean -y
 zsh_path="$(command -v zsh)"
@@ -495,7 +523,7 @@ else
 fi
 pass_step
 
-start_step "14. Post-setup helpers for Kali guest"
+start_step "15. Post-setup helpers for Kali guest"
 cat << 'EOF'
 Inside Kali guest (recommended), run:
   sudo apt update && sudo apt install -y qemu-guest-agent spice-vdagent
