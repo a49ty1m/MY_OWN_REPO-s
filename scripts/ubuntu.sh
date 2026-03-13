@@ -137,6 +137,84 @@ print_summary() {
     echo "-----------------------------------------------------------"
 }
 
+# ---------------------------------------------------------------------------
+# Interactive feature-selection menu
+# Shown at startup so the user can toggle flags before anything runs.
+# Skipped automatically when stdin is not a terminal (CI / piped usage).
+# ---------------------------------------------------------------------------
+show_menu() {
+    local choice
+    _flag() { [ "$1" = true ] && echo -e "${GREEN}[ON] ${NC}" || echo -e "${RED}[OFF]${NC}"; }
+
+    while true; do
+        clear
+        echo -e "${BLUE}=============================================${NC}"
+        echo -e "${BLUE}      Ubuntu Setup — Feature Selection       ${NC}"
+        echo -e "${BLUE}=============================================${NC}"
+        echo
+        printf "  %2s) %s  eza (modern ls replacement)\n"              "1"  "$(_flag "$INSTALL_EZA")"
+        printf "  %2s) %s  zoxide (smarter cd)\n"                      "2"  "$(_flag "$INSTALL_ZOXIDE")"
+        printf "  %2s) %s  MariaDB\n"                                  "3"  "$(_flag "$INSTALL_MARIADB")"
+        printf "  %2s) %s  DB Hardening (mysql_secure_installation)\n" "4"  "$(_flag "$RUN_DB_HARDENING")"
+        printf "  %2s) %s  Brave Browser\n"                            "5"  "$(_flag "$INSTALL_BRAVE")"
+        printf "  %2s) %s  Snap Apps (Discord, Telegram)\n"            "6"  "$(_flag "$INSTALL_SNAP_APPS")"
+        printf "  %2s) %s  KVM Host Setup\n"                           "7"  "$(_flag "$INSTALL_KVM_HOST")"
+        printf "  %2s) %s  Fresh Shell Prompt\n"                       "8"  "$(_flag "$INSTALL_FRESH")"
+        printf "  %2s) %s  Catppuccin Theme\n"                         "9"  "$(_flag "$INSTALL_THEME")"
+        printf "  %2s) %s  Nerd Font (%s)\n"                          "10"  "$(_flag "$INSTALL_NERD_FONT")" "$NERD_FONT_NAME"
+        echo
+        echo -e "   ${GREEN}r)${NC}  Run setup with current settings"
+        echo -e "   ${GREEN}a)${NC}  Enable ALL features"
+        echo -e "   ${YELLOW}n)${NC}  Disable ALL features"
+        echo -e "   ${RED}q)${NC}  Quit"
+        echo
+        read -rp "  Choose [1-10 / r / a / n / q]: " choice
+        case "$choice" in
+            1)  if [ "$INSTALL_EZA"       = true ]; then INSTALL_EZA=false;       else INSTALL_EZA=true;       fi ;;
+            2)  if [ "$INSTALL_ZOXIDE"    = true ]; then INSTALL_ZOXIDE=false;    else INSTALL_ZOXIDE=true;    fi ;;
+            3)  if [ "$INSTALL_MARIADB"   = true ]; then INSTALL_MARIADB=false;   else INSTALL_MARIADB=true;   fi ;;
+            4)  if [ "$RUN_DB_HARDENING"  = true ]; then RUN_DB_HARDENING=false;  else RUN_DB_HARDENING=true;  fi ;;
+            5)  if [ "$INSTALL_BRAVE"     = true ]; then INSTALL_BRAVE=false;     else INSTALL_BRAVE=true;     fi ;;
+            6)  if [ "$INSTALL_SNAP_APPS" = true ]; then INSTALL_SNAP_APPS=false; else INSTALL_SNAP_APPS=true; fi ;;
+            7)  if [ "$INSTALL_KVM_HOST"  = true ]; then INSTALL_KVM_HOST=false;  else INSTALL_KVM_HOST=true;  fi ;;
+            8)  if [ "$INSTALL_FRESH"     = true ]; then INSTALL_FRESH=false;     else INSTALL_FRESH=true;     fi ;;
+            9)  if [ "$INSTALL_THEME"     = true ]; then INSTALL_THEME=false;     else INSTALL_THEME=true;     fi ;;
+            10) if [ "$INSTALL_NERD_FONT" = true ]; then INSTALL_NERD_FONT=false; else INSTALL_NERD_FONT=true; fi ;;
+            r|R)
+                echo
+                echo -e "${GREEN}  Starting setup...${NC}"
+                sleep 1
+                return 0
+                ;;
+            a|A)
+                INSTALL_EZA=true; INSTALL_ZOXIDE=true; INSTALL_MARIADB=true
+                RUN_DB_HARDENING=true; INSTALL_BRAVE=true; INSTALL_SNAP_APPS=true
+                INSTALL_KVM_HOST=true; INSTALL_FRESH=true; INSTALL_THEME=true
+                INSTALL_NERD_FONT=true
+                ;;
+            n|N)
+                INSTALL_EZA=false; INSTALL_ZOXIDE=false; INSTALL_MARIADB=false
+                RUN_DB_HARDENING=false; INSTALL_BRAVE=false; INSTALL_SNAP_APPS=false
+                INSTALL_KVM_HOST=false; INSTALL_FRESH=false; INSTALL_THEME=false
+                INSTALL_NERD_FONT=false
+                ;;
+            q|Q)
+                echo "  Exiting."
+                exit 0
+                ;;
+            *)
+                echo -e "${YELLOW}  Invalid option. Press Enter to continue.${NC}"
+                read -r
+                ;;
+        esac
+    done
+}
+
+# Only show the menu when running interactively.
+if [ -t 0 ]; then
+    show_menu
+fi
+
 trap 'on_error $LINENO' ERR
 
 acquire_lock
