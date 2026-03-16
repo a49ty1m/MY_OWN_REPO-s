@@ -246,7 +246,7 @@ start_step "1. System update and core packages"
 retry sudo apt-get update
 retry sudo apt-get upgrade -y
 retry sudo apt-get install -y zsh tldr ncdu git git-lfs curl vim nano vlc gparted calibre gh \
-build-essential gcc g++ make fzf bat wget gpg gnome-tweaks htop unzip \
+build-essential gcc g++ make fzf bat wget gpg gnome-tweaks btop duf unzip \
 python3 python3-pip software-properties-common ca-certificates
 pass_step
 
@@ -529,6 +529,22 @@ if [ "$INSTALL_THEME" = true ]; then
     cursor_zip="$theme_tmp_dir/catppuccin-mocha-blue-cursors.zip"
     curl -fsSL https://github.com/catppuccin/cursors/releases/download/v2.0.0/catppuccin-mocha-blue-cursors.zip -o "$cursor_zip"
     unzip -o "$cursor_zip" -d "$HOME/.icons"
+
+    log_info "Installing Catppuccin theme for btop..."
+    btop_theme_dir="$HOME/.config/btop/themes"
+    btop_conf_file="$HOME/.config/btop/btop.conf"
+    mkdir -p "$btop_theme_dir"
+    curl -fsSL https://raw.githubusercontent.com/catppuccin/btop/main/themes/catppuccin_mocha.theme \
+        -o "$btop_theme_dir/catppuccin_mocha.theme"
+
+    mkdir -p "$(dirname "$btop_conf_file")"
+    if [ ! -f "$btop_conf_file" ]; then
+        printf 'color_theme = "catppuccin_mocha"\n' > "$btop_conf_file"
+    elif grep -q '^color_theme\s*=\s*"' "$btop_conf_file"; then
+        sed -i 's|^color_theme\s*=\s*".*"|color_theme = "catppuccin_mocha"|' "$btop_conf_file"
+    else
+        printf '\ncolor_theme = "catppuccin_mocha"\n' >> "$btop_conf_file"
+    fi
 
     if [ -n "${DISPLAY:-}" ] && command_exists gsettings; then
         log_info "Installing Catppuccin theme for GNOME Terminal..."
