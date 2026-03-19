@@ -1,6 +1,25 @@
 # Kali Linux Setup Guide for KVM
 
-> **Why KVM?** KVM (Kernel-based Virtual Machine) offers near-native performance but requires extra configuration for features like clipboard sharing and folder mounting that work out-of-the-box in VirtualBox/VMware.
+> Why KVM? KVM (Kernel-based Virtual Machine) gives near-native performance, but clipboard, display integration, and shared folders need explicit setup.
+
+---
+
+## Part 0: Host Prerequisites (Do This First)
+
+Before creating the Kali VM, confirm your Linux host is ready:
+
+1. CPU virtualization enabled in BIOS/UEFI (Intel VT-x or AMD-V).
+2. KVM/libvirt stack installed (`qemu-kvm`, `libvirt-daemon-system`, `virt-manager`).
+3. Your user is in `libvirt` and `kvm` groups.
+4. `libvirtd` service is running.
+
+Quick check commands on host:
+
+```bash
+egrep -c '(vmx|svm)' /proc/cpuinfo
+sudo systemctl status libvirtd --no-pager
+groups
+```
 
 ---
 
@@ -10,455 +29,289 @@
 
 | Setting                 | Recommended Value | Notes                                                    |
 | ----------------------- | ----------------- | -------------------------------------------------------- |
-| **Installation Method** | ISO image         | Download from [kali.org](https://www.kali.org/get-kali/) |
-| **OS Type**             | Debian 12/13      | Select the closest match available                       |
-| **RAM**                 | 8192 MiB (8 GB)   | Minimum 4 GB; 8 GB recommended for smooth operation      |
-| **CPU Cores**           | 8 cores           | Adjust based on your host CPU                            |
-| **Disk Space**          | 60–96 GiB         | 60 GiB minimum; 96 GiB if running multiple tools         |
-
-### Step 2: Complete Installation
-
-1. Boot from the ISO and follow the Kali installer prompts
-2. Choose your preferred desktop environment:
-   - **Xfce** — Lightweight, fast, low resource usage (recommended for VMs)
-   - **GNOME** — Feature-rich, better clipboard integration with KVM
-   - **Hybrid approach:** Install GNOME as display manager but use Xfce as desktop session for better performance while retaining GNOME's integration benefits
-3. Set up your user account and complete the installation
-4. Reboot into your new Kali system
+| Installation Method     | ISO image         | Download from [kali.org](https://www.kali.org/get-kali/) |
+| OS Type                 | Debian 12/13      | Select the closest match available                       |
+| RAM                     | 8192 MiB (8 GB)   | Minimum 4 GB; 8 GB recommended for smooth operation      |
+| CPU Cores               | 8 cores           | Adjust based on your host CPU                            |
+| Disk Space              | 60-96 GiB         | 60 GiB minimum; 96 GiB if running multiple tools         |
 
 ---
 
 ## Part 2: Post-Installation Configuration (KVM-Specific)
 
-### Phase A: Enable Clipboard & Display Integration
+### Phase A: Enable Clipboard and Display Integration
 
-These agents enable essential VM features that make Kali usable:
-
-| Agent | Purpose |
-|-------|--------|
-| `qemu-guest-agent` | Allows host to communicate with guest (graceful shutdown, freeze/thaw for snapshots) |
-| `spice-vdagent` | Enables clipboard sharing, automatic screen resizing, and drag-and-drop |
-
-**1. Update repositories and install guest agents:**
+Install guest agents to enable clipboard sharing and automatic resizing:
 
 ```bash
 sudo apt update && sudo apt install -y qemu-guest-agent spice-vdagent
-```
-
-**2. Enable the QEMU guest agent service to start on boot:**
-
-```bash
 sudo systemctl enable --now qemu-guest-agent
 ```
 
-> **Note:** You may need to reboot or log out/in for clipboard sharing to activate.
+### Phase B: Set Up Shared Folder (Host <-> Guest)
 
-**Troubleshooting clipboard issues:**
-- Ensure SPICE display is selected in virt-manager (not VNC)
-- Verify spice-vdagent is running: `systemctl status spice-vdagent`
-- Try restarting the service: `sudo systemctl restart spice-vdagent`
+Prefer `virtiofs` on modern KVM stacks (better performance and behavior). Keep `9p` as fallback.
+
+1. In `virt-manager`, add Filesystem hardware:
+   - Source: host path to share
+   - Target: `kali_share`
+   - Driver: use `virtiofs` when available, otherwise `virtio-9p`
+2. Inside Kali, create mount point:
+
+```bash
+mkdir -p "$HOME/Desktop/SharedFolder"
+```
+
+3. Add ONE of these `fstab` entries (virtiofs first, 9p fallback):
+
+```bash
+# Preferred: virtiofs
+echo "kali_share $HOME/Desktop/SharedFolder virtiofs defaults,nofail 0 0" | sudo tee -a /etc/fstab
+
+# Fallback: 9p
+echo "kali_share $HOME/Desktop/SharedFolder 9p trans=virtio,version=9p2000.L,rw,_netdev,nofail 0 0" | sudo tee -a /etc/fstab
+```
+
+4. Mount only the target path:
+
+```bash
+sudo mount "$HOME/Desktop/SharedFolder"
+```
+
+### Phase C: Enable 3D Acceleration and OpenGL
+
+1. In `virt-manager` -> Display Spice, enable OpenGL.
+2. Select the host render node. Do not hardcode the value; it differs by host.
+3. In Video Virtio, enable 3D acceleration.
+
+To list render nodes on host:
+
+```bash
+ls -l /dev/dri/renderD*
+```
 
 ---
 
-### Phase B: Set Up Shared Folder (Host ↔ Guest File Transfer)
+## Part 3: Universal Kali Setup Script
 
-The 9p virtio filesystem allows direct folder sharing between host and guest without network overhead.
-
-#### Prerequisites: Configure virt-manager (Host Side)
-
-1. Open your VM settings in `virt-manager`
-2. Click **Add Hardware** → **Filesystem**
-3. Configure as follows:
-
-| Field | Value |
-|-------|-------|
-| **Type** | mount |
-| **Driver** | virtio-9p |
-| **Source path** | `/path/to/your/host/folder` (e.g., `/home/user/kali-share`) |
-| **Target path** | `kali_share` (this is the mount tag, not a path) |
-
-4. Click **Finish** and start the VM
-
-#### Guest Configuration (Inside Kali)
-
-**1. Create the mount point on your Kali desktop:**
+Save this as `kali-setup.sh`. It asks you to choose mode interactively (KVM or normal) before running setup.
 
 ```bash
-mkdir -p ~/Desktop/SharedFolder
-```
-
-**2. Add a permanent mount entry to `/etc/fstab`:**
-
-This ensures the shared folder mounts automatically on every boot.
-
-```bash
-echo "kali_share /home/$(whoami)/Desktop/SharedFolder 9p trans=virtio,version=9p2000.L,rw,_netdev 0 0" | sudo tee -a /etc/fstab
-```
-
-| Mount Option | Meaning |
-|--------------|--------|
-| `trans=virtio` | Use virtio transport layer |
-| `version=9p2000.L` | Linux-specific 9p protocol |
-| `rw` | Read-write access |
-| `_netdev` | Wait for "network" (virtio) before mounting |
-
-**3. Mount the shared folder immediately:**
-
-```bash
-sudo mount -a
-```
-
-**Verify:** Check that your host files appear in `~/Desktop/SharedFolder`.
-
-**Troubleshooting:**
-- If mount fails, verify the target path in virt-manager matches exactly (`kali_share`)
-- Check kernel support: `ls /sys/module/ | grep 9p` should show `9p`, `9pnet`, `9pnet_virtio`
-
-### Phase C: Enable 3D Acceleration & OpenGL
-
-For smooth desktop performance and tools that require hardware rendering, enable the Virtio-GPU driver.
-
-#### 1. Configure virt-manager (Host Side)
-
-1. Open **VM Settings** and navigate to the **Display Spice** hardware.
-2. Under **Listen type**, select **None**.
-3. Check **OpenGL** and select the correct **Render node**:
-   - **Integrated GPU (AMD/Intel):** Usually `/dev/dri/renderD129` (Highly recommended for stability).
-   - **NVIDIA GPU:** Usually `/dev/dri/renderD128` (Can be finicky due to EGL initialization issues).
-4. Navigate to the **Video Virtio** hardware.
-5. Check **3D acceleration**.
-
-#### 2. Troubleshooting OpenGL (EGL Initialize Failed)
-
-If your VM fails to start with the error `eglInitialize failed: EGL_NOT_INITIALIZED`, follow these steps on your **Ubuntu Host**:
-
-**A. Ensure correct group membership:**
-```bash
-sudo usermod -aG render,video $USER
-sudo usermod -aG render,video libvirt-qemu
-```
-
-**B. Update AppArmor for GPU access:**
-Add the following lines to `/etc/apparmor.d/abstractions/libvirt-qemu`:
-```
-  /dev/dri/renderD* rw,
-  /dev/dri/ r,
-  /usr/share/libdrm/ r,
-  /usr/share/libdrm/** r,
-```
-Then reload: `sudo systemctl reload apparmor`
-
-**C. NVIDIA Specific Fix:**
-Ensure `nvidia-drm.modeset=1` is enabled in your GRUB bootloader and install `libnvidia-egl-gbm1`.
-
----
-
-## Part 3: Complete Kali Setup Script
-
-This script automates the entire post-installation setup. Save as `kali-setup.sh` and run with `bash kali-setup.sh`.
-
-**What it installs:**
-- Core utilities (zsh, git, vim, fzf, htop, etc.)
-- KVM guest agents (clipboard & display)
-- Security tools & wordlists (seclists, rockyou, nmap, burpsuite, metasploit, etc.)
-- Brave Browser (Nightly)
-- ZSH + Oh My Zsh with plugins
-- Catppuccin theme (GTK, icons, cursor)
-- Shared folder mount configuration
-
-```bash
-#!/bin/bash
+#!/usr/bin/env bash
+# ==============================================================================
+# KALI SETUP SCRIPT (UNIVERSAL: KVM OR NORMAL)
+# Safe, idempotent, and mode-aware.
+# ==============================================================================
 set -euo pipefail
 
-# ============================================================
-# Color output & logging
-# ============================================================
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+# --- CONFIGURATION FLAGS ---
+INSTALL_BASIC_TOOLS=true
+INSTALL_SECURITY_TOOLS=true
+INSTALL_NODE_NVM=true
+INSTALL_SHELL_CONFIG=true
 
-LOG_FILE="/var/log/mysetup.log"
+# --- SHARED FOLDER CONFIG ---
+SHARE_TAG="kali_share"
+SHARE_MOUNT_POINT="$HOME/Desktop/SharedFolder"
+
+# --- COLORS / STATE ---
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+STEP_TOTAL=0; STEP_PASS=0; STEP_SKIP=0; STEP_FAIL=0
+CURRENT_STEP=""
+SUDO_PID=""
+
+log_info()  { echo -e "${GREEN}[OK]${NC} [$(date '+%H:%M:%S')] $1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} [$(date '+%H:%M:%S')] $1"; }
+log_error() { echo -e "${RED}[ERR]${NC} [$(date '+%H:%M:%S')] $1"; }
+
+retry() {
+    local n=1 max=3 delay=5
+    while true; do
+        "$@" && return 0
+        if (( n >= max )); then return 1; fi
+        log_warn "Attempt $n/$max failed. Retrying in ${delay}s..."
+        sleep "$delay"
+        ((n++))
+    done
+}
+
+start_step() {
+    STEP_TOTAL=$((STEP_TOTAL + 1))
+    CURRENT_STEP="$1"
+    echo -e "\n${BLUE}>>> [STEP $STEP_TOTAL] $CURRENT_STEP${NC}"
+}
+
+pass_step() { STEP_PASS=$((STEP_PASS + 1)); }
+skip_step() { STEP_SKIP=$((STEP_SKIP + 1)); log_warn "Skipped: $CURRENT_STEP"; }
+on_error()  { STEP_FAIL=$((STEP_FAIL + 1)); log_error "Failed: $CURRENT_STEP"; }
+
+ensure_line_in_file() {
+    local line="$1"
+    local file="$2"
+    grep -Fqx "$line" "$file" || echo "$line" | sudo tee -a "$file" >/dev/null
+}
+
+cleanup() {
+    if [[ -n "$SUDO_PID" ]]; then
+        kill "$SUDO_PID" 2>/dev/null || true
+    fi
+}
+
+trap 'on_error' ERR
+trap cleanup EXIT
+
+# --- LOGGING (SECURE PERMISSIONS) ---
+sudo -v
+LOG_FILE="/var/log/kali-setup.log"
 sudo touch "$LOG_FILE"
-sudo chmod 666 "$LOG_FILE"
+sudo chown root:root "$LOG_FILE"
+sudo chmod 600 "$LOG_FILE"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-log_info()    { echo -e "${GREEN}[✔]${NC} $1"; }
-log_warn()    { echo -e "${YELLOW}[!]${NC} $1"; }
-log_error()   { echo -e "${RED}[✘]${NC} $1"; }
-log_section() {
-    echo -e "\n${BOLD}${BLUE}══════════════════════════════════════${NC}"
-    echo -e "${BOLD}${CYAN}  $1${NC}"
-    echo -e "${BOLD}${BLUE}══════════════════════════════════════${NC}"
-}
+# Keep sudo token alive in background.
+while true; do sudo -n true; sleep 55; done 2>/dev/null &
+SUDO_PID=$!
 
-# ============================================================
-# Pre-flight checks
-# ============================================================
-log_section "Pre-flight Checks"
-
-if [ "$EUID" -eq 0 ]; then
-    log_error "Do not run this script as root or with sudo!"
-    log_error "Run it as your normal user: bash mysetup.sh"
-    exit 1
-fi
-
-if ! grep -qi "kali" /etc/os-release 2>/dev/null; then
-    log_error "This script is designed for Kali Linux only."
-    exit 1
-fi
-
-log_info "Running as user: $USER (home: $HOME)"
-log_info "OS check passed: Kali Linux detected"
-log_info "Logging output to: $LOG_FILE"
-
-# --- Configuration ---
-ZSH_CUSTOM_DIR="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
-SHARE_TAG="kali_share"
-SHARE_POINT="$HOME/Desktop/SharedFolder"
-
-# ============================================================
-# [1/8] SYSTEM UPDATE & BASE TOOLS
-# ============================================================
-log_section "[1/8] Updating system and installing base tools"
-
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y zsh tealdeer ncdu git git-lfs curl vim nano build-essential \
-gcc g++ make fzf fastfetch fonts-powerline wget gpg unzip terminator htop tree jq \
-bat eza ripgrep fd-find tmux p7zip-full python3-pip python3-venv pipx fonts-liberation \
-zoxide atuin
-
-if ! command -v fresh &> /dev/null; then
-    log_info "Installing fresh..."
-    curl -fsSL https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh
-else
-    log_warn "fresh already installed, skipping..."
-fi
-
-log_info "Base tools done."
-
-# ============================================================
-# [2/8] KVM GUEST AGENTS
-# ============================================================
-log_section "[2/8] Installing KVM guest agents"
-
-sudo apt install -y qemu-guest-agent spice-vdagent
-
-# FIX: Both qemu-guest-agent AND spice-vdagent have no [Install] section
-# so systemctl enable fails for both. Just start them instead.
-sudo systemctl start qemu-guest-agent || true
-sudo systemctl start spice-vdagent || true
-
-log_info "KVM guest agents configured."
-
-# ============================================================
-# [3/8] KALI SECURITY TOOLS & WORDLISTS
-# ============================================================
-log_section "[3/8] Installing Kali security tools"
-
-sudo apt install -y seclists wordlists kali-tools-web kali-tools-passwords \
-kali-tools-exploitation kali-tools-sniffing-spoofing nmap metasploit-framework \
-gobuster feroxbuster sqlmap nikto john hashcat hydra bloodhound neo4j
-
-if [ -f /usr/share/wordlists/rockyou.txt.gz ]; then
-    log_info "Unzipping rockyou.txt.gz..."
-    sudo gunzip -f /usr/share/wordlists/rockyou.txt.gz
-fi
-
-log_info "Security tools done."
-
-# ============================================================
-# [4/8] BRAVE NIGHTLY
-# ============================================================
-log_section "[4/8] Installing Brave Nightly"
-
-if ! command -v brave-browser-nightly &> /dev/null; then
-    curl -fsSL https://dl.brave.com/install.sh | CHANNEL=nightly sh
-    log_info "Brave Nightly installed."
-else
-    log_warn "Brave Nightly already installed, skipping..."
-fi
-
-# ============================================================
-# [5/8] NODE (NVM)
-# ============================================================
-log_section "[5/8] Setting up NVM and Node"
-
-if [ ! -d "$HOME/.nvm" ] && [ ! -d "$HOME/.config/nvm" ]; then
-    log_info "Installing NVM..."
-    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-fi
-
-# FIX: Newer NVM versions install to ~/.config/nvm (XDG) instead of ~/.nvm.
-# Detect whichever path was actually used.
-if [ -d "$HOME/.config/nvm" ]; then
-    export NVM_DIR="$HOME/.config/nvm"
-elif [ -d "$HOME/.nvm" ]; then
-    export NVM_DIR="$HOME/.nvm"
-else
-    log_error "NVM directory not found after install!"
-    exit 1
-fi
-
-log_info "NVM directory: $NVM_DIR"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
-nvm install 20 --lts || nvm install 20
-log_info "Node $(node --version) ready."
-
-# ============================================================
-# [6/8] ZSH, OH-MY-ZSH & SHELL CONFIG
-# ============================================================
-log_section "[6/8] Setting up Zsh, Oh My Zsh and shell config"
-
-if [ ! -d "$HOME/.oh-my-zsh" ]; then
-    log_info "Installing Oh My Zsh..."
-    set +e
-    RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh -c \
-        "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
-        "" --unattended
-    set -e
-    log_info "Oh My Zsh installed."
-else
-    log_warn "Oh My Zsh already installed, skipping..."
-fi
-
-ZSH_CUSTOM_DIR="$HOME/.oh-my-zsh/custom"
-mkdir -p "$ZSH_CUSTOM_DIR/plugins" "$ZSH_CUSTOM_DIR/themes"
-
-function clone_plugin() {
-    local repo_url=$1
-    local plugin_name=$2
-    if [ ! -d "$ZSH_CUSTOM_DIR/plugins/$plugin_name" ]; then
-        log_info "Cloning plugin: $plugin_name"
-        git clone --depth 1 "$repo_url" "$ZSH_CUSTOM_DIR/plugins/$plugin_name"
-    else
-        log_warn "Plugin $plugin_name already exists, skipping..."
-    fi
-}
-
-clone_plugin "https://github.com/zsh-users/zsh-autosuggestions" "zsh-autosuggestions"
-clone_plugin "https://github.com/zsh-users/zsh-syntax-highlighting.git" "zsh-syntax-highlighting"
-
-# Install Powerlevel10k
-if [ ! -d "$ZSH_CUSTOM_DIR/themes/powerlevel10k" ]; then
-    log_info "Installing Powerlevel10k theme..."
-    git clone --depth 1 https://github.com/romkatv/powerlevel10k.git \
-        "$ZSH_CUSTOM_DIR/themes/powerlevel10k"
-else
-    log_warn "Powerlevel10k already installed, skipping..."
-fi
-
-# Ensure .zshrc exists
-if [ ! -f "$HOME/.zshrc" ]; then
-    cp "$HOME/.oh-my-zsh/templates/zshrc.zsh-template" "$HOME/.zshrc"
-fi
-
-# Set theme to Powerlevel10k
-sed -i 's/^ZSH_THEME=.*/ZSH_THEME="powerlevel10k\/powerlevel10k"/' "$HOME/.zshrc"
-
-# Add plugins
-for plugin in zsh-autosuggestions zsh-syntax-highlighting fzf sudo; do
-    if ! grep -q "$plugin" "$HOME/.zshrc"; then
-        sed -i "/^plugins=(/ s/)/ $plugin)/" "$HOME/.zshrc"
-    fi
+# --- MODE SELECTION (MANUAL) ---
+echo -e "${BLUE}=============================================${NC}"
+echo -e "${BLUE}      Kali Setup - Choose Installation Mode  ${NC}"
+echo -e "${BLUE}=============================================${NC}"
+echo "  1) KVM guest setup"
+echo "  2) Normal setup (hardware/laptop/VPS)"
+while true; do
+    read -rp "Select mode [1/2]: " SETUP_CHOICE
+    case "$SETUP_CHOICE" in
+        1)  SETUP_MODE="kvm"; break ;;
+        2)  SETUP_MODE="normal"; break ;;
+        *)  log_warn "Invalid choice. Please enter 1 or 2." ;;
+    esac
 done
 
-# FIX: NVM installer auto-appends its own source lines to .zshrc pointing to
-# the wrong path. Strip them all out before we write our own clean block.
-log_info "Cleaning up NVM lines auto-added by installer..."
-sed -i '/NVM_DIR/d' "$HOME/.zshrc"
-sed -i '/nvm\.sh/d' "$HOME/.zshrc"
-sed -i '/bash_completion/d' "$HOME/.zshrc"
+log_info "Using setup mode: $SETUP_MODE"
 
-# Write custom config block (IDEMPOTENT)
-if ! grep -q "Custom Config Added by mysetup.sh" "$HOME/.zshrc"; then
-    # FIX: Use the detected NVM_DIR instead of hardcoding ~/.nvm
-    cat << EOF >> "$HOME/.zshrc"
-
-# Custom Config Added by mysetup.sh
-alias cat="batcat"
-alias ls="eza --icons"
-alias l="eza -lh --icons"
-alias la="eza -lah --icons"
+# --- SHARED ALIASES ---
+SHARED_ALIASES='
+# --- Custom Aliases ---
+alias ls="eza --icons --group-directories-first"
+alias ll="eza -la --icons --group-directories-first"
+alias lt="eza --tree --icons --level=2"
+alias cat="batcat --paging=never"
 alias fd="fdfind"
 alias help="tldr"
+alias ports="ss -tulpn"
+'
 
-# Zoxide (smart cd - use 'z <dir>' to jump anywhere)
-eval "\$(zoxide init zsh)"
+start_step "System Update"
+retry sudo apt update
+retry sudo apt upgrade -y
+pass_step
 
-# Atuin (better ctrl+r shell history search)
-eval "\$(atuin init zsh)"
-
-# NVM Setup (path auto-detected during install)
-export NVM_DIR="$NVM_DIR"
-[ -s "\$NVM_DIR/nvm.sh" ] && \. "\$NVM_DIR/nvm.sh"
-[ -s "\$NVM_DIR/bash_completion" ] && \. "\$NVM_DIR/bash_completion"
-
-# Start fastfetch in interactive terminals only
-[[ \$- == *i* ]] && command -v fastfetch >/dev/null && fastfetch
-EOF
-    log_info ".zshrc configured."
+start_step "Base Tools"
+if [[ "$INSTALL_BASIC_TOOLS" == true ]]; then
+    sudo apt install -y \
+        zsh git curl vim fzf bat eza tldr htop tree jq \
+        python3-pip python3-venv pipx zoxide fonts-powerline mesa-utils
+    pass_step
+else
+    skip_step
 fi
 
-# ============================================================
-# [7/8] PYTHON PIPX TOOLS
-# ============================================================
-log_section "[7/8] Installing Python tools via pipx"
+start_step "Platform Specifics (Mode: $SETUP_MODE)"
+if [[ "$SETUP_MODE" == "kvm" ]]; then
+    log_info "Installing guest agents..."
+    sudo apt install -y qemu-guest-agent spice-vdagent
+    sudo systemctl enable --now qemu-guest-agent
 
+    log_info "Checking 3D acceleration hints..."
+    if command -v glxinfo >/dev/null 2>&1; then
+        if glxinfo 2>/dev/null | grep -Eiq 'virgl|llvmpipe|mesa'; then
+            log_info "OpenGL renderer info is available."
+        else
+            log_warn "Could not verify accelerated renderer from glxinfo output."
+        fi
+    else
+        log_warn "glxinfo not found (mesa-utils missing). Skipping renderer check."
+    fi
+
+    log_info "Configuring shared folder mount..."
+    mkdir -p "$SHARE_MOUNT_POINT"
+
+    if grep -qw virtiofs /proc/filesystems; then
+        FSTAB_LINE="$SHARE_TAG $SHARE_MOUNT_POINT virtiofs defaults,nofail 0 0"
+        log_info "Using virtiofs for shared folder."
+    else
+        FSTAB_LINE="$SHARE_TAG $SHARE_MOUNT_POINT 9p trans=virtio,version=9p2000.L,rw,_netdev,nofail 0 0"
+        log_warn "virtiofs unavailable; using 9p fallback."
+    fi
+
+    ensure_line_in_file "$FSTAB_LINE" /etc/fstab
+    sudo mount "$SHARE_MOUNT_POINT" || log_warn "Mount failed. Verify virt-manager filesystem target and driver."
+else
+    log_info "Skipping KVM-specific agents and shared folder setup."
+fi
+pass_step
+
+start_step "Kali Security Tools"
+if [[ "$INSTALL_SECURITY_TOOLS" == true ]]; then
+    sudo apt install -y seclists wordlists nmap metasploit-framework gobuster sqlmap
+    if [[ -f /usr/share/wordlists/rockyou.txt.gz ]]; then
+        sudo gunzip -f /usr/share/wordlists/rockyou.txt.gz
+    fi
+    pass_step
+else
+    skip_step
+fi
+
+start_step "Node via NVM"
+if [[ "$INSTALL_NODE_NVM" == true ]]; then
+    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+    export NVM_DIR="$([ -d "$HOME/.config/nvm" ] && echo "$HOME/.config/nvm" || echo "$HOME/.nvm")"
+    # shellcheck disable=SC1090
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    nvm install --lts
+    pass_step
+else
+    skip_step
+fi
+
+start_step "Zsh + Oh My Zsh"
+if [[ "$INSTALL_SHELL_CONFIG" == true ]]; then
+    if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
+        RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+    fi
+
+    # Install external plugins to prevent "plugin not found" warnings.
+    ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+    [[ -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]] || git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
+    [[ -d "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" ]] || git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
+    [[ -d "$ZSH_CUSTOM/plugins/zsh-history-substring-search" ]] || git clone --depth=1 https://github.com/zsh-users/zsh-history-substring-search "$ZSH_CUSTOM/plugins/zsh-history-substring-search"
+    [[ -d "$ZSH_CUSTOM/plugins/zsh-completions" ]] || git clone --depth=1 https://github.com/zsh-users/zsh-completions "$ZSH_CUSTOM/plugins/zsh-completions"
+
+    sed -i 's|^plugins=.*|plugins=(git sudo fzf z extract dirhistory copypath copyfile history command-not-found zsh-autosuggestions zsh-completions zsh-history-substring-search zsh-syntax-highlighting)|' "$HOME/.zshrc"
+    grep -q "SHARED_ALIASES" "$HOME/.zshrc" || echo -e "\n# SHARED_ALIASES\n$SHARED_ALIASES" >> "$HOME/.zshrc"
+    pass_step
+else
+    skip_step
+fi
+
+start_step "Python pipx Tools"
 pipx ensurepath
-
-declare -a PIPX_TOOLS=(
-    "impacket"
-    "pwntools"
-    "volatility3"
-    "crackmapexec"
-)
-
+declare -a PIPX_TOOLS=("impacket" "pwntools" "volatility3" "netexec")
 for tool in "${PIPX_TOOLS[@]}"; do
-    log_info "Installing $tool..."
-    pipx install "$tool" || log_warn "$tool already installed or failed, skipping..."
+    log_info "Installing $tool via pipx..."
+    pipx install "$tool" || log_warn "$tool install failed or already installed."
 done
+pass_step
 
-log_info "Python tools done."
-
-# ============================================================
-# [8/8] SHARED FOLDER & CLEANUP
-# ============================================================
-log_section "[8/8] Shared folder, cleanup and finalizing"
-
-mkdir -p "$SHARE_POINT"
-if ! grep -q "$SHARE_TAG" /etc/fstab; then
-    log_info "Adding shared folder to /etc/fstab..."
-    echo "$SHARE_TAG $SHARE_POINT 9p trans=virtio,version=9p2000.L,rw,_netdev,nofail 0 0" | \
-        sudo tee -a /etc/fstab
-fi
-sudo mount -a || log_warn "Shared folder mount failed (host share may not be configured yet)"
-
-log_info "Running apt autoremove..."
-sudo apt autoremove -y
-
-sudo chsh -s "$(which zsh)" "$USER"
-log_info "Default shell set to zsh."
-
-tldr --update || true
-
-echo ""
-echo -e "${BOLD}${GREEN}════════════════════════════════════════${NC}"
-echo -e "${BOLD}${GREEN}   KALI SETUP COMPLETE — PLEASE REBOOT  ${NC}"
-echo -e "${BOLD}${GREEN}════════════════════════════════════════${NC}"
-echo ""
-echo -e "${CYAN}After reboot:${NC}"
-echo "  • Terminal will launch Powerlevel10k config wizard"
-echo "  • Use 'z <dir>' instead of cd (zoxide)"
-echo "  • Press Ctrl+R for atuin history search"
-echo "  • Full log saved to: $LOG_FILE"
-echo ""
+echo
+log_info "Setup finished. Passed: $STEP_PASS | Skipped: $STEP_SKIP | Failed: $STEP_FAIL"
+log_info "Log file: $LOG_FILE"
+log_info "Mode used: $SETUP_MODE"
+log_info "Recommended next step: reboot the VM."
 ```
 
----
+### Notes
 
-*Last updated: February 2026*
+1. This script is safe to rerun; it avoids duplicate `fstab` entries.
+2. The script always uses your manual mode selection (KVM or normal).
+3. If shared folder mount fails, verify target tag (`kali_share`) and driver type in `virt-manager`.
