@@ -114,6 +114,43 @@ sudo mount -a
 - If mount fails, verify the target path in virt-manager matches exactly (`kali_share`)
 - Check kernel support: `ls /sys/module/ | grep 9p` should show `9p`, `9pnet`, `9pnet_virtio`
 
+### Phase C: Enable 3D Acceleration & OpenGL
+
+For smooth desktop performance and tools that require hardware rendering, enable the Virtio-GPU driver.
+
+#### 1. Configure virt-manager (Host Side)
+
+1. Open **VM Settings** and navigate to the **Display Spice** hardware.
+2. Under **Listen type**, select **None**.
+3. Check **OpenGL** and select the correct **Render node**:
+   - **Integrated GPU (AMD/Intel):** Usually `/dev/dri/renderD129` (Highly recommended for stability).
+   - **NVIDIA GPU:** Usually `/dev/dri/renderD128` (Can be finicky due to EGL initialization issues).
+4. Navigate to the **Video Virtio** hardware.
+5. Check **3D acceleration**.
+
+#### 2. Troubleshooting OpenGL (EGL Initialize Failed)
+
+If your VM fails to start with the error `eglInitialize failed: EGL_NOT_INITIALIZED`, follow these steps on your **Ubuntu Host**:
+
+**A. Ensure correct group membership:**
+```bash
+sudo usermod -aG render,video $USER
+sudo usermod -aG render,video libvirt-qemu
+```
+
+**B. Update AppArmor for GPU access:**
+Add the following lines to `/etc/apparmor.d/abstractions/libvirt-qemu`:
+```
+  /dev/dri/renderD* rw,
+  /dev/dri/ r,
+  /usr/share/libdrm/ r,
+  /usr/share/libdrm/** r,
+```
+Then reload: `sudo systemctl reload apparmor`
+
+**C. NVIDIA Specific Fix:**
+Ensure `nvidia-drm.modeset=1` is enabled in your GRUB bootloader and install `libnvidia-egl-gbm1`.
+
 ---
 
 ## Part 3: Complete Kali Setup Script

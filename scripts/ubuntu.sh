@@ -386,12 +386,35 @@ if [ "$INSTALL_KVM_HOST" = true ]; then
         log_warn "kvm-ok not found; install/check cpu-checker package manually if needed"
     fi
 
-    if ! id -nG "$USER" | grep -qw libvirt; then
-        sudo usermod -aG libvirt "$USER"
+    # GPU / 3D Acceleration Support
+    log_info "Configuring GPU access for 3D acceleration..."
+    for grp in libvirt kvm render video; do
+        if ! id -nG "$USER" | grep -qw "$grp"; then
+            sudo usermod -aG "$grp" "$USER"
+        fi
+    done
+
+    # Grant libvirt-qemu access to GPU nodes
+    if id libvirt-qemu >/dev/null 2>&1; then
+        sudo usermod -aG render,video libvirt-qemu
     fi
-    if ! id -nG "$USER" | grep -qw kvm; then
-        sudo usermod -aG kvm "$USER"
+
+    # Fix AppArmor blocking GPU access for QEMU
+    APPARMOR_LIBVIRT_CONF="/etc/apparmor.d/abstractions/libvirt-qemu"
+    if [ -f "$APPARMOR_LIBVIRT_CONF" ]; then
+        log_info "Updating AppArmor for GPU access..."
+        if ! grep -q "/dev/dri/" "$APPARMOR_LIBVIRT_CONF"; then
+            sudo bash -c "printf '\n  # GPU 3D acceleration\n  /dev/dri/renderD* rw,\n  /dev/dri/ r,\n  /usr/share/libdrm/ r,\n  /usr/share/libdrm/** r,\n' >> $APPARMOR_LIBVIRT_CONF"
+            # Optional: NVIDIA specific library access if driver is detected
+            if nvidia-smi >/dev/null 2>&1; then
+                sudo bash -c "printf '  /dev/nvidia* rw,\n  /usr/share/glvnd/egl_vendor.d/ r,\n  /usr/share/glvnd/egl_vendor.d/** r,\n  /usr/share/egl/egl_external_platform.d/ r,\n  /usr/share/egl/egl_external_platform.d/** r,\n  /usr/lib/x86_64-linux-gnu/libnvidia-egl* r,\n  /usr/lib/x86_64-linux-gnu/libEGL_nvidia* r,\n' >> $APPARMOR_LIBVIRT_CONF"
+                # Ensure GBM library for NVIDIA EGL is present
+                retry sudo apt-get install -y libnvidia-egl-gbm1 || true
+            fi
+            sudo systemctl reload apparmor
+        fi
     fi
+
     sudo systemctl enable --now libvirtd
 
     # Ensure default libvirt network is available for NAT-based Kali VM networking.
