@@ -297,8 +297,7 @@ function clone_plugin() {
     local plugin_name=$2
     if [ ! -d "$ZSH_CUSTOM_DIR/plugins/$plugin_name" ]; then
         log_info "Cloning plugin: $plugin_name"
-        git clone --depth 1 "$repo_url" 
-        "$ZSH_CUSTOM_DIR/plugins/$plugin_name"
+        git clone --depth 1 "$repo_url" "$ZSH_CUSTOM_DIR/plugins/$plugin_name"
     else
         log_warn "Plugin $plugin_name already exists, skipping..."
     fi
