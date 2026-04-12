@@ -391,11 +391,26 @@ if [ "$INSTALL_THEME" = true ]; then
 
     curl -fsSL https://github.com/catppuccin/cursors/releases/download/v2.0.0/catppuccin-mocha-blue-cursors.zip -o "$tmp_theme/cursor.zip"
     unzip -o "$tmp_theme/cursor.zip" -d "$HOME/.icons"
-    if [ -n "${DISPLAY:-}" ] && command_exists gsettings; then
-        gsettings set org.gnome.desktop.interface gtk-theme "catppuccin-mocha-blue-standard+default"
-        gsettings set org.gnome.desktop.interface icon-theme "Papirus-Dark"
-        gsettings set org.gnome.desktop.interface cursor-theme "catppuccin-mocha-blue-cursors"
+    
+    # Set default theme/icons/cursors
+    if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        if command_exists gsettings; then
+            gsettings set org.gnome.desktop.interface gtk-theme "catppuccin-mocha-blue-standard+default" 2>/dev/null || true
+            gsettings set org.gnome.desktop.interface icon-theme "Papirus-Dark" 2>/dev/null || true
+            gsettings set org.gnome.desktop.interface cursor-theme "catppuccin-mocha-blue-cursors" 2>/dev/null || true
+        fi
+        
+        if echo "${XDG_CURRENT_DESKTOP:-}" | grep -qi "kde"; then
+            if command_exists kwriteconfig6; then
+                kwriteconfig6 --file kdeglobals --group Icons --key Theme "Papirus-Dark"
+                kwriteconfig6 --file kcminputrc --group Mouse --key cursorTheme "catppuccin-mocha-blue-cursors"
+            elif command_exists kwriteconfig5; then
+                kwriteconfig5 --file kdeglobals --group Icons --key Theme "Papirus-Dark"
+                kwriteconfig5 --file kcminputrc --group Mouse --key cursorTheme "catppuccin-mocha-blue-cursors"
+            fi
+        fi
     fi
+
     rm -rf "$tmp_theme"
     pass_step
 else
