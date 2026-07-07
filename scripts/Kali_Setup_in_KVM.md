@@ -1,3 +1,4 @@
+
 # Kali Linux Setup Guide for KVM
 
 > Why KVM? KVM (Kernel-based Virtual Machine) gives near-native performance, but clipboard, display integration, and shared folders need explicit setup.
@@ -22,6 +23,56 @@ groups
 ```
 
 ---
+## Network Overview
+
+- **default** – a NAT network (`192.168.122.0/24`). Provides outbound Internet for the guest.
+- **pentest‑lab** – an isolated lab network (`192.168.100.0/24`). Allows the guest to talk to the other vulnerable VMs.
+
+These two NICs should be attached to the Kali VM (one to each network) to enable both Internet access and lab interaction.
+
+## Network Configuration Steps
+
+1. **Attach the NAT interface** (default network) – this provides Internet:
+
+   ```bash
+   virsh -c qemu:///system attach-interface Kali-Linux network default \
+        --model virtio --config --live
+   ```
+
+2. **Attach the isolated lab interface** (`pentest-lab`) – this allows communication with the other vulnerable VMs:
+
+   ```bash
+   virsh -c qemu:///system attach-interface Kali-Linux network pentest-lab \
+        --model virtio --config --live
+   ```
+   *If you created the VM with `virt-manager`, you can also add the interfaces via the UI:*
+   - Open the Kali VM → **Details** → **NIC** → **Add Hardware** → **Network source:** choose `default` for the first NIC and `pentest‑lab` for the second.
+   - Set **Device model** to `virtio` and check **`--config`** (to persist) and **`--live`** (to apply immediately).
+
+3. **Verify the interfaces inside Kali** after reboot:
+
+   ```bash
+   ip a
+   # You should see two interfaces, e.g.:
+   # - ens3  (192.168.122.x) – NAT / Internet
+   # - ens4  (192.168.100.x) – lab network
+   ```
+
+4. **Check routing** – the default route should point to the NAT interface:
+
+   ```bash
+   ip route
+   # Expect a line like: default via 192.168.122.1 dev ens3
+   ```
+
+5. **Test connectivity**:
+
+   ```bash
+   ping -c 3 8.8.8.8        # Internet
+   ping -c 3 192.168.100.1  # Lab gateway / another VM
+   ```
+
+These steps ensure that the Kali VM has both internet access and lab‑network connectivity, matching the behavior you would get with an Ubuntu guest.
 
 ## Part 1: Initial VM Creation
 
@@ -209,8 +260,13 @@ pass_step
 start_step "Base Tools"
 if [[ "$INSTALL_BASIC_TOOLS" == true ]]; then
     sudo apt install -y \
-        zsh git curl vim fzf bat eza tldr htop tree jq \
+        zsh git curl vim fzf bat eza htop tree jq \
         python3-pip python3-venv pipx zoxide fonts-powerline mesa-utils
+    
+    if ! sudo apt install -y tldr; then
+        log_warn "apt install tldr failed, attempting pip install..."
+        pipx install tldr
+    fi
     pass_step
 else
     skip_step
