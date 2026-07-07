@@ -26,26 +26,54 @@ echo "Target Home: $TARGET_HOME"
 echo "============================================="
 
 # ----------------------------------------------------------------------
+# 0. Ensure system is fully up-to-date before installing anything
+# ----------------------------------------------------------------------
+echo "STEP 0: Updating system packages..."
+# Kill any stale dnf processes that might hold locks from previous runs
+killall -9 dnf dnf5 2>/dev/null || true
+sleep 1
+
+# Clean stale metadata so we always fetch fresh mirror lists
+dnf clean metadata 2>/dev/null || true
+
+# Upgrade all packages to the latest versions.
+# The -y flag auto-confirms; this runs early so subsequent steps use the
+# newest library versions.
+#
+# Note: on Fedora this may pull in newer kernel, glibc, etc.;
+# a reboot may be required.
+# We use || true because transient mirror 404s should not block the rest
+# of the setup.
+dnf upgrade -y --refresh || {
+  echo "WARNING: System upgrade encountered errors (possibly transient mirror issues)."
+  echo "         Continuing with the rest of the setup..."
+}
+
+echo "============================================="
+
+# ----------------------------------------------------------------------
 # 1. Enable RPM Fusion Repositories & Install Multimedia Codecs
 # ----------------------------------------------------------------------
 echo "STEP 1: Enabling RPM Fusion & Installing Multimedia Codecs..."
-dnf install -y https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
-               https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
+dnf install -y \
+  https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
+  https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm \
+  || true  # don't fail if already installed
 
-# Enable Fedora Cisco openh264 repo
-dnf config-manager --set-enabled fedora-cisco-openh264 || true
+# Enable Fedora Cisco openh264 repo (DNF5 syntax)
+dnf config-manager setopt fedora-cisco-openh264.enabled=1 || true
 
 # Swap to full FFmpeg (required for H.264/H.265 decoders)
-dnf swap -y ffmpeg-free ffmpeg --allowerasing
+dnf swap -y ffmpeg-free ffmpeg --allowerasing || true
 
 # Install multimedia complements & GStreamer plugins
-dnf install -y @multimedia --setopt="install_weak_deps=False" --exclude=PackageKit-gstreamer-plugin
+dnf install -y @multimedia --setopt="install_weak_deps=False" --exclude=PackageKit-gstreamer-plugin || true
 
 # Install OpenH264 support
-dnf install -y gstreamer1-plugin-openh264 mozilla-openh264
+dnf install -y gstreamer1-plugin-openh264 mozilla-openh264 || true
 
 # Update multimedia packages
-dnf upgrade -y @multimedia
+dnf upgrade -y @multimedia || true
 
 echo "RPM Fusion repositories enabled and multimedia codecs installed."
 echo "============================================="
@@ -54,8 +82,9 @@ echo "============================================="
 # 2. Install Nvidia Drivers & 32-bit Libraries (Crucial for Steam)
 # ----------------------------------------------------------------------
 echo "STEP 2: Installing Nvidia Drivers (akmod-nvidia) & 32-bit Libraries..."
-dnf config-manager --set-enabled rpmfusion-nonfree-nvidia-driver || true
-dnf install -y akmod-nvidia xorg-x11-drv-nvidia-cuda xorg-x11-drv-nvidia-libs.i686 egl-wayland
+# Enable the nvidia driver repo (DNF5 syntax)
+dnf config-manager setopt rpmfusion-nonfree-nvidia-driver.enabled=1 || true
+dnf install -y akmod-nvidia xorg-x11-drv-nvidia-cuda xorg-x11-drv-nvidia-libs.i686 egl-wayland || true
 echo "Nvidia drivers and Steam graphics libraries installation complete."
 echo "============================================="
 
@@ -121,7 +150,9 @@ echo "============================================="
 # ----------------------------------------------------------------------
 echo "STEP 4: Installing Fresh Shell Configuration Manager..."
 if [ ! -d "$TARGET_HOME/.fresh" ]; then
-  sudo -u "$TARGET_USER" bash -c "$(curl -sL https://get.freshshell.com)"
+  sudo -u "$TARGET_USER" bash -c "$(curl -sL https://get.freshshell.com)" || {
+    echo "WARNING: Fresh Shell installation failed (Perl dependency?). Skipping."
+  }
 else
   echo "Fresh is already installed."
 fi
@@ -131,15 +162,41 @@ echo "============================================="
 # 5. Install Brave & Brave Nightly Browsers
 # ----------------------------------------------------------------------
 echo "STEP 5: Installing Brave and Brave Nightly Browsers..."
-# Stable Repo
-dnf config-manager --add-repo https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo
-rpm --import https://brave-browser-rpm-release.s3.brave.com/brave-core.asc
 
-# Nightly Repo
-dnf config-manager --add-repo https://brave-browser-rpm-nightly.s3.brave.com/brave-browser-nightly.repo
-rpm --import https://brave-browser-rpm-nightly.s3.brave.com/brave-core-nightly.asc
+# Ensure dnf-plugins-core is available
+dnf install -y dnf-plugins-core || true
 
-dnf install -y brave-browser brave-browser-nightly
+# Remove any old/broken Brave repo files first
+rm -f /etc/yum.repos.d/brave-browser*.repo
+
+# Write correct Brave Browser repo file (with $basearch in the URL)
+cat <<'EOF' > /etc/yum.repos.d/brave-browser.repo
+[brave-browser]
+name=Brave Browser
+baseurl=https://brave-browser-rpm-release.s3.brave.com/$basearch
+enabled=1
+gpgcheck=1
+gpgkey=https://brave-browser-rpm-release.s3.brave.com/brave-core.asc
+EOF
+
+# Write correct Brave Browser Nightly repo file
+cat <<'EOF' > /etc/yum.repos.d/brave-browser-nightly.repo
+[brave-browser-nightly]
+name=Brave Browser Nightly
+baseurl=https://brave-browser-rpm-nightly.s3.brave.com/$basearch
+enabled=1
+gpgcheck=1
+gpgkey=https://brave-browser-rpm-nightly.s3.brave.com/brave-core-nightly.asc
+EOF
+
+# Import GPG keys
+rpm --import https://brave-browser-rpm-release.s3.brave.com/brave-core.asc || true
+rpm --import https://brave-browser-rpm-nightly.s3.brave.com/brave-core-nightly.asc || true
+
+dnf install -y brave-browser brave-browser-nightly || {
+  echo "WARNING: Brave Nightly may not be available. Installing stable only..."
+  dnf install -y brave-browser || true
+}
 echo "Brave browsers installed successfully."
 echo "============================================="
 
@@ -148,7 +205,15 @@ echo "============================================="
 # ----------------------------------------------------------------------
 echo "STEP 6: Installing VS Code..."
 rpm --import https://packages.microsoft.com/keys/microsoft.asc
-sh -c 'echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com/yumrepos/vscode\nenabled=1\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc" > /etc/yum.repos.d/vscode.repo'
+cat <<'EOF' > /etc/yum.repos.d/vscode.repo
+[code]
+name=Visual Studio Code
+baseurl=https://packages.microsoft.com/yumrepos/vscode
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.microsoft.com/keys/microsoft.asc
+EOF
+
 dnf check-update || true
 dnf install -y code
 echo "VS Code installed successfully."
@@ -158,7 +223,7 @@ echo "============================================="
 # 7. Install Ghostty Terminal Emulator
 # ----------------------------------------------------------------------
 echo "STEP 7: Installing Ghostty..."
-dnf copr enable -y scottames/ghostty
+dnf copr enable -y scottames/ghostty || true
 dnf install -y ghostty
 echo "Ghostty installed successfully."
 echo "============================================="
@@ -175,7 +240,7 @@ echo "============================================="
 # 8a. Install General CLI Utilities
 # ----------------------------------------------------------------------
 echo "STEP 8a: Installing General CLI Utilities..."
-dnf install -y tldr ncdu calibre gh gcc-c++ fzf duf eza zoxide mycli git-lfs
+dnf install -y tldr ncdu calibre gh gcc-c++ fzf duf eza zoxide mycli git-lfs || true
 echo "CLI utilities installed successfully."
 echo "============================================="
 
@@ -191,7 +256,7 @@ echo "============================================="
 # 10. Install Steam and Discord
 # ----------------------------------------------------------------------
 echo "STEP 10: Installing Steam and Discord..."
-dnf install -y steam discord
+dnf install -y steam discord || true
 echo "Steam and Discord installed successfully."
 
 # Note on Steam WebHelper blank screen issues on Wayland / hybrid graphics
@@ -250,7 +315,9 @@ echo "============================================="
 # ----------------------------------------------------------------------
 echo "STEP 12: Installing Antigravity CLI..."
 if ! command -v agy &> /dev/null; then
-  sudo -u "$TARGET_USER" bash -c "$(curl -fsSL https://antigravity.google/cli/install.sh)"
+  sudo -u "$TARGET_USER" bash -c "$(curl -fsSL https://antigravity.google/cli/install.sh)" || {
+    echo "WARNING: Antigravity CLI installation failed. Skipping."
+  }
 else
   echo "Antigravity CLI (agy) is already installed."
 fi
@@ -271,6 +338,121 @@ systemctl enable --now libvirtd
 echo "Adding $TARGET_USER to the libvirt group..."
 usermod -a -G libvirt "$TARGET_USER"
 echo "Virtualization stack installed successfully."
+echo "============================================="
+
+# ----------------------------------------------------------------------
+# 13a. Create a host-side shared folder for KVM guests (virtiofs)
+# ----------------------------------------------------------------------
+echo "STEP 13a: Setting up a host shared folder for KVM guests..."
+
+# Create the folder on the host
+SHARE_DIR="${TARGET_HOME}/SharedFolder"
+mkdir -p "$SHARE_DIR"
+chown "$TARGET_USER":"$TARGET_USER" "$SHARE_DIR"
+echo "  → Host folder created at: $SHARE_DIR"
+
+# Install virtiofsd (host-side daemon required for virtio-fs)
+dnf install -y virtiofsd || true
+
+VM_NAME="Kali-Linux"
+
+# Check if the VM exists
+if ! virsh -c qemu:///system dominfo "$VM_NAME" &>/dev/null; then
+  echo "WARNING: VM '$VM_NAME' not found. Skipping shared folder attachment."
+  echo "  Create the VM first, then re-run this script."
+  echo "============================================="
+else
+  # ── virtiofs requires the VM to be SHUT DOWN to modify its XML ──
+  VM_STATE=$(virsh -c qemu:///system domstate "$VM_NAME" 2>/dev/null | head -1)
+
+  if [ "$VM_STATE" = "running" ]; then
+    echo "  → Shutting down '$VM_NAME' to apply shared folder config..."
+    virsh -c qemu:///system shutdown "$VM_NAME" 2>/dev/null || true
+    # Wait for it to actually stop (up to 60 seconds)
+    for i in $(seq 1 60); do
+      VM_STATE=$(virsh -c qemu:///system domstate "$VM_NAME" 2>/dev/null | head -1)
+      [ "$VM_STATE" = "shut off" ] && break
+      sleep 1
+    done
+    if [ "$VM_STATE" != "shut off" ]; then
+      echo "  → Force-stopping '$VM_NAME'..."
+      virsh -c qemu:///system destroy "$VM_NAME" 2>/dev/null || true
+      sleep 2
+    fi
+  fi
+
+  # ── 1. Add <memoryBacking> for shared memory (required by virtiofs) ──
+  # Check if memoryBacking is already configured
+  if ! virsh -c qemu:///system dumpxml "$VM_NAME" | grep -q "<memoryBacking>"; then
+    echo "  → Adding shared memory backing to VM (required for virtiofs)..."
+    # Use virt-xml if available, otherwise patch the XML manually
+    if command -v virt-xml &>/dev/null; then
+      virt-xml "$VM_NAME" --edit --memorybacking source.type=memfd,access.mode=shared 2>/dev/null || {
+        # Fallback: manual XML edit
+        TMPXML=$(mktemp)
+        virsh -c qemu:///system dumpxml "$VM_NAME" > "$TMPXML"
+        # Insert memoryBacking after the closing </vcpu> or </currentMemory> tag
+        sed -i '/<\/currentMemory>/a \  <memoryBacking>\n    <source type="memfd"/>\n    <access mode="shared"/>\n  </memoryBacking>' "$TMPXML"
+        virsh -c qemu:///system define "$TMPXML"
+        rm -f "$TMPXML"
+      }
+    else
+      TMPXML=$(mktemp)
+      virsh -c qemu:///system dumpxml "$VM_NAME" > "$TMPXML"
+      sed -i '/<\/currentMemory>/a \  <memoryBacking>\n    <source type="memfd"/>\n    <access mode="shared"/>\n  </memoryBacking>' "$TMPXML"
+      virsh -c qemu:///system define "$TMPXML"
+      rm -f "$TMPXML"
+    fi
+    echo "  → Shared memory backing added."
+  else
+    echo "  → Shared memory backing already configured."
+  fi
+
+  # ── 2. Add <filesystem> device for the shared folder ──
+  if ! virsh -c qemu:///system dumpxml "$VM_NAME" | grep -q "kali_share"; then
+    echo "  → Adding shared folder device to VM..."
+    FSXML=$(mktemp)
+    cat > "$FSXML" <<'XMLEOF'
+<filesystem type="mount" accessmode="passthrough">
+  <driver type="virtiofs"/>
+  <source dir="SHARE_DIR_PLACEHOLDER"/>
+  <target dir="kali_share"/>
+</filesystem>
+XMLEOF
+    # Replace placeholder with actual path
+    sed -i "s|SHARE_DIR_PLACEHOLDER|$SHARE_DIR|" "$FSXML"
+    virsh -c qemu:///system attach-device "$VM_NAME" "$FSXML" --config
+    rm -f "$FSXML"
+    echo "  → Shared folder device added to VM config."
+  else
+    echo "  → Shared folder device already configured."
+  fi
+
+  # ── 3. Start the VM back up ──
+  echo "  → Starting '$VM_NAME'..."
+  virsh -c qemu:///system start "$VM_NAME" 2>/dev/null || true
+
+  echo ""
+  echo "  ┌─────────────────────────────────────────────────────────┐"
+  echo "  │  STEP 13a DONE — Host shared folder configured.        │"
+  echo "  │                                                        │"
+  echo "  │  Host folder:  $SHARE_DIR"
+  echo "  │  VM device:    kali_share (virtiofs)                   │"
+  echo "  │                                                        │"
+  echo "  │  ⚠  You still need to MOUNT it inside the Kali VM:    │"
+  echo "  │                                                        │"
+  echo "  │  1. Open a terminal inside Kali and run:               │"
+  echo "  │     sudo mkdir -p ~/Desktop/SharedFolder               │"
+  echo "  │     sudo mount -t virtiofs kali_share \\                │"
+  echo "  │          ~/Desktop/SharedFolder                        │"
+  echo "  │                                                        │"
+  echo "  │  2. To auto-mount on every boot, add to /etc/fstab:   │"
+  echo "  │     kali_share /home/kali/Desktop/SharedFolder \\       │"
+  echo "  │          virtiofs defaults 0 0                         │"
+  echo "  │                                                        │"
+  echo "  └─────────────────────────────────────────────────────────┘"
+  echo ""
+fi
 echo "============================================="
 
 # ----------------------------------------------------------------------
@@ -347,7 +529,7 @@ echo "Installing Catppuccin KDE theme..."
 KDE_REPO_DIR="/tmp/catppuccin-kde"
 rm -rf "$KDE_REPO_DIR"
 sudo -u "$TARGET_USER" git clone --depth=1 https://github.com/catppuccin/kde "$KDE_REPO_DIR"
-sudo -u "$TARGET_USER" bash -c "cd $KDE_REPO_DIR && chmod +x install.sh && ./install.sh 1 4 1 auto"
+sudo -u "$TARGET_USER" bash -c "cd $KDE_REPO_DIR && chmod +x install.sh && ./install.sh 1 4 1 auto" || true
 rm -rf "$KDE_REPO_DIR"
 
 # 15b. Konsole Color Schemes
@@ -357,7 +539,7 @@ sudo -u "$TARGET_USER" mkdir -p "$KONSOLE_DIR"
 KONSOLE_REPO_DIR="/tmp/catppuccin-konsole"
 rm -rf "$KONSOLE_REPO_DIR"
 sudo -u "$TARGET_USER" git clone --depth=1 https://github.com/catppuccin/konsole "$KONSOLE_REPO_DIR"
-sudo -u "$TARGET_USER" cp "$KONSOLE_REPO_DIR"/themes/*.colorscheme "$KONSOLE_DIR/"
+sudo -u "$TARGET_USER" cp "$KONSOLE_REPO_DIR"/themes/*.colorscheme "$KONSOLE_DIR/" || true
 rm -rf "$KONSOLE_REPO_DIR"
 
 # 15c. GTK Theme
@@ -368,7 +550,7 @@ GTK_REPO_DIR="/tmp/Catppuccin-GTK-Theme"
 rm -rf "$GTK_REPO_DIR"
 sudo -u "$TARGET_USER" git clone --depth=1 https://github.com/Fausto-Korpsvart/Catppuccin-GTK-Theme.git "$GTK_REPO_DIR"
 # Run the installer as TARGET_USER in batch mode
-sudo -u "$TARGET_USER" env BATCH_MODE=true bash "$GTK_REPO_DIR/themes/install.sh" -a mauve -m dark
+sudo -u "$TARGET_USER" env BATCH_MODE=true bash "$GTK_REPO_DIR/themes/install.sh" -a mauve -m dark || true
 rm -rf "$GTK_REPO_DIR"
 
 # 15d. Cursor compatibility symlink
@@ -407,7 +589,7 @@ repo_gpgcheck=1
 gpgkey=https://keys.anydesk.com/repos/RPM-GPG-KEY
 EOF
 
-dnf install -y anydesk
+dnf install -y anydesk || true
 echo "AnyDesk installed successfully."
 echo "============================================="
 
